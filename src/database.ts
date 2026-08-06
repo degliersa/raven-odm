@@ -110,7 +110,7 @@ export class Database {
     collection.bind({
       database: this.database,
       descriptor: collection.descriptor,
-      openSession: () => this.openSession(),
+      runInSession: (given, fn) => this.#runInSession(given, fn),
       generateDocumentId: (document) =>
         store.conventions.generateDocumentId(this.database, document),
     })
@@ -123,9 +123,21 @@ export class Database {
   }
 
   async transaction<T>(fn: (session: OdmSession) => Promise<T>): Promise<T> {
+    return this.#runInSession(undefined, (session) => fn(session))
+  }
+
+  /**
+   * The single Unit of Work policy: a caller-owned session is reused untouched, a
+   * library-owned session is saved after successful work and disposed either way.
+   */
+  async #runInSession<T>(
+    given: OdmSession | undefined,
+    fn: (session: OdmSession, owned: boolean) => Promise<T>,
+  ): Promise<T> {
+    if (given) return fn(given, false)
     const session = this.openSession()
     try {
-      const result = await fn(session)
+      const result = await fn(session, true)
       await session.saveChanges()
       return result
     } finally {
