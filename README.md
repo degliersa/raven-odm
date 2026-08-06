@@ -1,16 +1,50 @@
 # @degliersa/raven-odm
 
-A thin, typed ODM over the official RavenDB Node.js client. Documents are validated through the [Standard Schema](https://standardschema.dev/) interface, so the package is independent of a particular validator.
+`@degliersa/raven-odm` is a thin, typed object-document mapper for the official RavenDB Node.js client. It adds a small collection API, Standard Schema validation, predictable IDs, explicit sessions, and normalized errors without hiding RavenDB.
 
-## Install
+The project is designed for applications that want:
+
+- exact RavenDB collection names without implicit pluralization;
+- schemas that are independent of Zod, Valibot, ArkType, Yup, or another Standard Schema validator;
+- typed CRUD with validation before writes;
+- explicit Unit of Work boundaries and optimistic concurrency;
+- a native RavenDB escape hatch whenever the ODM should not get in the way.
+
+The package is currently released from the Changesets `alpha` prerelease channel. The public API is intentionally small while the integration suite runs against a real RavenDB server.
+
+## Installation
+
+### Requirements
+
+- Node.js 22 or newer;
+- RavenDB 7.x or newer;
+- one Standard Schema-compatible validator.
+
+Install the ODM, RavenDB client, and a validator:
 
 ```bash
 npm install @degliersa/raven-odm ravendb zod
 ```
 
-RavenDB and `@degliersa/raven-odm` require Node.js 22 or newer.
+The RavenDB client is a peer dependency, so your application controls its client version.
 
-## Complete example
+### Run RavenDB locally
+
+The examples and integration tests can use a local Docker server:
+
+```bash
+docker run -d --name raven-odm-local -p 8080:8080 \
+  -e RAVEN_Setup_Mode=None \
+  -e RAVEN_License_Eula_Accepted=true \
+  -e RAVEN_Security_UnsecuredAccessAllowed=PublicNetwork \
+  ravendb/ravendb:latest
+```
+
+Create an application database such as `raven-odm-examples` in RavenDB Studio before running an example. Set `RAVENDB_URL` and `RAVENDB_DATABASE` when your server or database uses different values.
+
+## Quick start
+
+This example defines a collection, connects a database, and exercises create, read, update, query, and delete:
 
 ```ts
 import { z } from 'zod'
@@ -25,41 +59,51 @@ const Users = defineCollection({
 })
 
 const db = createDatabase({
-  urls: ['http://127.0.0.1:8080'],
-  database: 'example',
+  urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8080'],
+  database: process.env.RAVENDB_DATABASE ?? 'example',
   collections: [Users],
 })
 
 await db.connect()
 
-const created = await Users.create({ name: 'Maria', email: 'maria@example.com' })
-const loaded = await Users.findById(created.id)
-const updated = await Users.update(created.id, { name: 'Maria Silva' })
-const matching = await Users.findMany({ where: { email: 'maria@example.com' } })
-await Users.delete(created.id)
+try {
+  const created = await Users.create({
+    name: 'Maria',
+    email: 'maria@example.com',
+  })
+  const loaded = await Users.findById(created.id)
+  const updated = await Users.update(created.id, { name: 'Maria Silva' })
+  const matching = await Users.findMany({
+    where: { email: 'maria@example.com' },
+  })
 
-console.log({ created, loaded, updated, matching })
-await db.dispose()
+  console.log({ created, loaded, updated, matching })
+  await Users.delete(created.id)
+} finally {
+  await db.dispose()
+}
 ```
 
 Collection names are exact. A collection named `Order` is stored in RavenDB's `Order` collection, not an automatically pluralized `Orders` collection.
 
-## Supported validators
+## Validators
 
-Any Standard Schema implementation works. These minimum versions were verified:
+Any validator implementing Standard Schema can be passed as `schema`. These validators and minimum versions have been verified:
 
-| Validator | Minimum version |
-| --- | ---: |
-| Zod | 3.24.0 |
-| Valibot | 1.0 |
-| ArkType | 2.0 |
-| Yup | 1.7.0 |
+| Validator | Minimum version | Repository example |
+| --- | ---: | --- |
+| [Zod](https://github.com/colinhacks/zod) | 3.24.0 | [`examples/zod.ts`](examples/zod.ts) |
+| [Valibot](https://github.com/fabian-hiller/valibot) | 1.0 | [`examples/valibot.ts`](examples/valibot.ts) |
+| [ArkType](https://github.com/arktypeio/arktype) | 2.0 | [`examples/arktype.ts`](examples/arktype.ts) |
+| [Yup](https://github.com/jquense/yup) | 1.7.0 | [`examples/yup.ts`](examples/yup.ts) |
+
+The validator is a dependency of your application, not a dependency of the ODM core. See [`examples/README.md`](examples/README.md) for setup and execution instructions.
 
 ## IDs
 
 The default `idStrategy: 'uuid'` creates a known client-side ID in the form `<collection>/<uuid>`. This works when creating documents in an external session.
 
-Use `idGenerator` for application-defined IDs. It receives the validated document, collection name, and database name; its result takes precedence over `idStrategy`.
+Use `idGenerator` for application-defined IDs. It receives the validated document, collection name, and database name; its result takes precedence over `idStrategy`:
 
 ```ts
 const Users = defineCollection({
@@ -69,11 +113,11 @@ const Users = defineCollection({
 })
 ```
 
-Use `idStrategy: 'server'` to request RavenDB identities such as `Orders/1-A`. The ID is assigned during `saveChanges()`, so this strategy cannot be used with `create(data, { session })`; use a custom generator or the default UUID strategy for external sessions.
+Use `idStrategy: 'server'` to request RavenDB identities such as `Orders/1-A`. RavenDB assigns that ID during `saveChanges()`, so this strategy cannot be used with `create(data, { session })`. Use a custom generator or the default UUID strategy for external sessions.
 
-## Sessions and unit of work
+## Sessions and Unit of Work
 
-Convenience CRUD methods open, save, and dispose a session automatically. Share an explicit session to group operations:
+Convenience CRUD methods open, save, and dispose a session automatically. Use `transaction` to group writes across collections:
 
 ```ts
 await db.transaction(async (session) => {
@@ -101,7 +145,7 @@ A stale save throws `ConcurrencyConflictError` with `code === 'concurrency_confl
 
 ## Errors
 
-All RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`, `collection`, and `documentId` instead of matching RavenDB implementation-specific exception classes.
+RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`, `collection`, and `documentId` instead of matching RavenDB implementation-specific exception classes.
 
 | Code | Meaning |
 | --- | --- |
@@ -115,9 +159,9 @@ All RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `co
 
 `findById` returns `null` for a missing document; it does not throw `document_not_found`.
 
-## Escape hatches
+## Native escape hatches
 
-Use `db.store` for the native `IDocumentStore`, or run a native operation in the session used by a collection:
+Use `db.store` for the native `IDocumentStore`, or run a native operation in a collection session:
 
 ```ts
 await Users.raw(async (session) => {
@@ -130,16 +174,28 @@ const nativeStore = db.store
 
 ## Document lifecycle
 
-Returned documents are flat validated copies, not tracked entities. RavenDB metadata is removed before validation and the public `id` is reattached afterward. Mutating a returned object does not schedule a database write; call `update`, use an explicit session, or use the raw escape hatch for persistence.
+Returned documents are flat validated copies, not tracked entities. RavenDB metadata is removed before validation and the public `id` is reattached afterward. Mutating a returned object does not schedule a database write; call `update`, use an explicit session, or use the native escape hatch for persistence.
 
 ## Development
 
+From the `raven-odm` directory:
+
 ```bash
-npm run typecheck
+npm ci
 npm run lint
+npm run typecheck
+npm run typecheck:examples
 npm run build
 npm test
 npm run check:pack
 ```
 
-The integration suite uses a real RavenDB server. Set `RAVENDB_URL` to an existing server, or leave it unset and the test setup will start `ravendb/ravendb:latest` on port 8099 with Docker.
+The integration suite uses `RAVENDB_URL` when it is set. Without that variable, Vitest starts `ravendb/ravendb:latest` on port 8099 and removes only the container it started.
+
+## Contributing
+
+Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening an issue or pull request. It describes the development workflow, design principles, integration-test requirements, Changesets policy, commit conventions, and Code of Conduct.
+
+## License
+
+MIT © 2026 degliersa
