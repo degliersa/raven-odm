@@ -111,6 +111,8 @@ export class Database {
       database: this.database,
       descriptor: collection.descriptor,
       openSession: () => this.openSession(),
+      generateDocumentId: (document) =>
+        store.conventions.generateDocumentId(this.database, document),
     })
   }
 

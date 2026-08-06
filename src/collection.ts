@@ -28,11 +28,12 @@ export interface CollectionOptions<S extends DocumentSchema> {
   /**
    * How to obtain a document id when `idGenerator` is absent.
    * - 'uuid'   (default): client-side `<name>/<randomUUID>`; works inside an external session.
+   * - 'hilo': RavenDB HiLo `<name>/<number>-<nodeTag>`; reserves ranges and works inside
+   *   an external session.
    * - 'server': RavenDB identity `<name>/1-A`; needs the save to resolve, so it is
    *   rejected when a `session` is supplied.
    */
-  readonly idStrategy?: 'uuid' | 'server' | undefined
-  /** Full control. Takes precedence over idStrategy. */
+  readonly idStrategy?: 'uuid' | 'hilo' | 'server' | undefined
   readonly idGenerator?: IdGenerator<S> | undefined
   /** Validate documents coming back from the server. Default: false. */
   readonly validateOnRead?: boolean | undefined
@@ -69,6 +70,7 @@ export interface CollectionBinding {
   readonly database: string
   readonly descriptor: CollectionDescriptor
   openSession(): OdmSession
+  generateDocumentId(document: object): Promise<string>
 }
 
 export class Collection<S extends DocumentSchema> {
@@ -77,9 +79,10 @@ export class Collection<S extends DocumentSchema> {
   readonly descriptor: CollectionDescriptor
 
   #idGenerator: IdGenerator<S> | undefined
-  #idStrategy: 'uuid' | 'server'
+  #idStrategy: 'uuid' | 'hilo' | 'server'
   #validateOnRead: boolean
   #binding: CollectionBinding | undefined
+  #hiloMarker = Symbol('raven-odm-hilo')
 
   constructor(options: CollectionOptions<S>) {
     if (!options.name) {
@@ -93,9 +96,13 @@ export class Collection<S extends DocumentSchema> {
     this.#idGenerator = options.idGenerator
     this.#idStrategy = options.idStrategy ?? 'uuid'
     this.#validateOnRead = options.validateOnRead ?? false
-    // isType always false: raven-odm passes documentType explicitly on every call,
-    // so the client must never shape-sniff a plain object into the wrong collection.
-    this.descriptor = { name: options.name, isType: () => false, construct: (dto) => dto }
+    // The marker is only present on payloads being assigned a HiLo ID. This keeps
+    // normal object literals from being shape-sniffed into a collection.
+    this.descriptor = {
+      name: options.name,
+      isType: (obj) => Reflect.get(obj, this.#hiloMarker) === true,
+      construct: (dto) => dto,
+    }
   }
 
   /** @internal */
@@ -160,6 +167,13 @@ export class Collection<S extends DocumentSchema> {
       })
     } else if (this.#idStrategy === 'uuid') {
       id = `${this.name}/${randomUUID()}`
+    } else if (this.#idStrategy === 'hilo') {
+      try {
+        Object.defineProperty(payload, this.#hiloMarker, { value: true })
+        id = await binding.generateDocumentId(payload)
+      } catch (err) {
+        throw normalizeRavenError(err, { collection: this.name })
+      }
     } else {
       if (opts.session) {
         throw new RavenOdmError(
