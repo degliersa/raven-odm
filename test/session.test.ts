@@ -46,6 +46,36 @@ describe('sessions and unit of work', () => {
     expect(await Users.findById(user.id)).toBeNull()
   })
 
+  it('commits work done in the session the library opens', async () => {
+    await Users.raw(async (session) => {
+      await session.store({ name: 'Maria', email: 'maria@example.com' }, 'Users/owned')
+    })
+    expect(await Users.findById('Users/owned')).toMatchObject({ name: 'Maria' })
+  })
+
+  it('commits nothing when work inside a library-owned session fails', async () => {
+    await expect(
+      Users.raw(async (session) => {
+        await session.store({ name: 'Maria', email: 'maria@example.com' }, 'Users/failed')
+        throw new Error('work failed')
+      }),
+    ).rejects.toThrow('work failed')
+    expect(await Users.findById('Users/failed')).toBeNull()
+  })
+
+  it('commits nothing when a transaction callback fails', async () => {
+    let createdId = ''
+    await expect(
+      db.transaction(async (session) => {
+        const user = await Users.create({ name: 'Maria', email: 'maria@example.com' }, { session })
+        createdId = user.id
+        throw new Error('transaction failed')
+      }),
+    ).rejects.toThrow('transaction failed')
+    expect(createdId).not.toBe('')
+    expect(await Users.findById(createdId)).toBeNull()
+  })
+
   it('rejects server identities inside an external session', async () => {
     const ServerOrders = defineCollection({
       name: 'ServerOrder',
