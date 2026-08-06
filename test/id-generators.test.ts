@@ -77,6 +77,44 @@ describe('ID generators', () => {
     await expect(ServerUsers.findById(created.id)).resolves.toEqual(created)
   })
 
+  it('keeps HiLo ids off the stored document and out of its shape', async () => {
+    const created = await HiloUsers.create({ name: 'HiLo', email: 'hilo@example.com' })
+
+    const stored = await HiloUsers.raw(async (session) => {
+      return session.load<Record<string, unknown>>(created.id)
+    })
+    if (!stored) throw new Error('HiLo document was not created')
+    expect(Object.getOwnPropertySymbols(stored)).toEqual([])
+    expect(stored['@metadata']).toMatchObject({ '@collection': 'HiloUsers' })
+  })
+
+  it('gives each HiLo collection its own id prefix', async () => {
+    const otherDatabase = await withDatabase()
+    const first = defineCollection({ name: 'AlphaDocs', schema: userSchema, idStrategy: 'hilo' })
+    const second = defineCollection({ name: 'BetaDocs', schema: userSchema, idStrategy: 'hilo' })
+    const otherDb = createDatabase({
+      urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8099'],
+      database: otherDatabase.name,
+      collections: [first, second],
+    })
+    await otherDb.connect()
+    try {
+      const alpha = await first.create({ name: 'Alpha', email: 'alpha@example.com' })
+      const beta = await second.create({ name: 'Beta', email: 'beta@example.com' })
+      expect(alpha.id).toMatch(/^AlphaDocs\/\d+-A$/)
+      expect(beta.id).toMatch(/^BetaDocs\/\d+-A$/)
+    } finally {
+      await otherDb.dispose()
+      await otherDatabase.dispose()
+    }
+  })
+
+  it('resolves the descriptor only from itself, never from a document', () => {
+    expect(HiloUsers.descriptor.isType(HiloUsers.descriptor)).toBe(true)
+    expect(HiloUsers.descriptor.isType(UuidUsers.descriptor)).toBe(false)
+    expect(HiloUsers.descriptor.isType({ name: 'HiLo', email: 'hilo@example.com' })).toBe(false)
+  })
+
   it('uses a custom generator before the configured strategy', async () => {
     const created = await CustomUsers.create({ name: 'Custom', email: 'custom@example.com' })
     expect(created.id).toBe('custom/custom')

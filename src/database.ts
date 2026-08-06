@@ -111,8 +111,12 @@ export class Database {
       database: this.database,
       descriptor: collection.descriptor,
       openSession: () => this.openSession(),
-      generateDocumentId: (document) =>
-        store.conventions.generateDocumentId(this.database, document),
+      // The descriptor, not the document: RavenDB resolves the collection from
+      // whatever it is handed, and the descriptor answers isType() for itself.
+      // Passing the payload would require marking it so RavenDB could recognise
+      // it, which is a private property on a document the caller owns.
+      generateDocumentId: () =>
+        store.conventions.generateDocumentId(this.database, collection.descriptor),
     })
   }
 
