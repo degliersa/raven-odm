@@ -113,7 +113,11 @@ const Users = defineCollection({
 })
 ```
 
+Use `idStrategy: 'hilo'` for RavenDB's client-side HiLo generator. The client reserves an ID range and returns IDs such as `Orders/128-A` before `saveChanges()`, so HiLo works with external sessions. The first ID for a collection may make a server request to reserve the range, and unused values can leave gaps.
+
 Use `idStrategy: 'server'` to request RavenDB identities such as `Orders/1-A`. RavenDB assigns that ID during `saveChanges()`, so this strategy cannot be used with `create(data, { session })`. Use a custom generator or the default UUID strategy for external sessions.
+
+See [`examples/id-strategies.ts`](examples/id-strategies.ts) for all four generator paths in one runnable example.
 
 ## Sessions and Unit of Work
 

@@ -1,11 +1,24 @@
-# Validator examples
+# Examples
 
-Each file defines the same small `Users` collection with a different Standard Schema validator:
+The examples cover both validator integration and ID generation:
+
+## Validators
+
+Each validator example defines a small `Users` collection with a different Standard Schema implementation:
 
 - `zod.ts` — Zod
 - `valibot.ts` — Valibot
 - `arktype.ts` — ArkType
 - `yup.ts` — Yup
+
+## ID strategies
+
+`id-strategies.ts` demonstrates the supported ID paths:
+
+- UUID IDs generated locally;
+- RavenDB HiLo IDs generated from a reserved range;
+- RavenDB server identities;
+- custom `idGenerator` values.
 
 ## Run an example locally
 
