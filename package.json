@@ -41,6 +41,7 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "test": "vitest run",
+    "test:unit": "vitest run test/unit",
     "check:pack": "npm run build && npm pack --pack-destination /tmp && publint /tmp/degliersa-raven-odm-*.tgz && attw /tmp/degliersa-raven-odm-*.tgz",
     "changeset": "changeset"
   },

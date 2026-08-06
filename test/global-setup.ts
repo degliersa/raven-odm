@@ -19,7 +19,18 @@ async function waitForServer(): Promise<void> {
   throw new Error(`RavenDB did not become ready at ${url}`)
 }
 
+function shouldStartRaven(): boolean {
+  const targets = process.argv
+    .slice(2)
+    .filter((arg) => !arg.startsWith('-'))
+    .filter((arg) => arg.includes('test/'))
+
+  if (targets.length === 0) return true
+  return targets.some((arg) => !arg.includes('test/unit/'))
+}
+
 export async function setup(): Promise<() => void> {
+  if (!shouldStartRaven()) return () => {}
   if (!process.env.RAVENDB_URL) {
     const existing = spawnSync('docker', ['inspect', '--format={{.State.Running}}', container], {
       stdio: 'pipe',

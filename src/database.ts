@@ -1,11 +1,12 @@
-import {
-  DocumentStore,
-  type IAuthOptions,
-  type IDocumentSession,
-  type IDocumentStore,
-} from 'ravendb'
-import type { CollectionBinding, CollectionDescriptor, OdmSession } from './collection'
-import { normalizeRavenError, RavenOdmError } from './errors'
+import type { IAuthOptions, IDocumentStore } from 'ravendb'
+import type { CollectionBinding, OdmSession } from './collection'
+import { RavenOdmError } from './errors'
+import type {
+  CollectionDescriptor,
+  DatabaseAdapter,
+  DatabaseAdapterFactory,
+} from './persistence'
+import { createRavenDatabaseAdapter } from './ravendb-adapter'
 
 export interface DatabaseOptions {
   readonly urls: string[]
@@ -13,34 +14,19 @@ export interface DatabaseOptions {
   readonly authOptions?: IAuthOptions | undefined
   /** Enables optimistic concurrency on every session raven-odm opens. Default: false. */
   readonly optimisticConcurrency?: boolean | undefined
+  readonly adapterFactory?: DatabaseAdapterFactory | undefined
   readonly collections: readonly {
     readonly name: string
     readonly descriptor: CollectionDescriptor
     bind(binding: CollectionBinding): void
   }[]
 }
-class Session implements OdmSession {
-  constructor(readonly raw: IDocumentSession) {}
-
-  async saveChanges(): Promise<void> {
-    try {
-      await this.raw.saveChanges()
-    } catch (err) {
-      throw normalizeRavenError(err, {})
-    }
-  }
-
-  dispose(): void {
-    this.raw.dispose()
-  }
-}
 
 export class Database {
   readonly database: string
-  #store: IDocumentStore | undefined
+  #adapter: DatabaseAdapter | undefined
   #optimistic: boolean
   #options: DatabaseOptions
-  /** descriptor -> exact collection name; read live by the findCollectionName override. */
   #registry = new Map<CollectionDescriptor, string>()
 
   constructor(options: DatabaseOptions) {
@@ -62,42 +48,35 @@ export class Database {
   }
 
   get store(): IDocumentStore {
-    if (!this.#store) {
+    if (!this.#adapter) {
       throw new RavenOdmError(
         'not_connected',
         'Database is not connected. Call await db.connect() first.',
       )
     }
-    return this.#store
+    return this.#adapter.raw as IDocumentStore
   }
 
   async connect(): Promise<this> {
-    if (this.#store) return this
-    const store = new DocumentStore(
-      this.#options.urls,
-      this.#options.database,
-      this.#options.authOptions as IAuthOptions,
-    )
-
-    // MUST happen before initialize(): the setter throws once conventions freeze.
-    // The closure reads #registry live, so collections may register at any time.
-    const fallback = store.conventions.findCollectionName
-    store.conventions.findCollectionName = (descriptor) =>
-      this.#registry.get(descriptor as CollectionDescriptor) ?? fallback(descriptor)
-
-    for (const collection of this.#options.collections) this.#register(store, collection)
-
+    if (this.#adapter) return this
+    const factory = this.#options.adapterFactory ?? createRavenDatabaseAdapter
+    const adapter = factory({
+      urls: this.#options.urls,
+      database: this.#options.database,
+      authOptions: this.#options.authOptions as IAuthOptions | undefined,
+      optimisticConcurrency: this.#optimistic,
+    })
     try {
-      store.initialize()
+      for (const collection of this.#options.collections) this.#register(adapter, collection)
     } catch (err) {
-      store.dispose()
-      throw normalizeRavenError(err, {})
+      await adapter.dispose()
+      throw err
     }
-    this.#store = store
+    this.#adapter = adapter
     return this
   }
 
-  #register(store: IDocumentStore, collection: DatabaseOptions['collections'][number]): void {
+  #register(adapter: DatabaseAdapter, collection: DatabaseOptions['collections'][number]): void {
     if ([...this.#registry.values()].includes(collection.name)) {
       throw new RavenOdmError(
         'invalid_configuration',
@@ -106,20 +85,24 @@ export class Database {
       )
     }
     this.#registry.set(collection.descriptor, collection.name)
-    store.conventions.registerEntityType(collection.descriptor as never)
+    adapter.register(collection.descriptor, collection.name)
     collection.bind({
       database: this.database,
       descriptor: collection.descriptor,
       openSession: () => this.openSession(),
       generateDocumentId: (document) =>
-        store.conventions.generateDocumentId(this.database, document),
+        adapter.generateDocumentId(this.database, document, collection.descriptor),
     })
   }
 
   openSession(): OdmSession {
-    const raw = this.store.openSession()
-    if (this.#optimistic) raw.advanced.useOptimisticConcurrency = true
-    return new Session(raw)
+    if (!this.#adapter) {
+      throw new RavenOdmError(
+        'not_connected',
+        'Database is not connected. Call await db.connect() first.',
+      )
+    }
+    return this.#adapter.openSession() as OdmSession
   }
 
   async transaction<T>(fn: (session: OdmSession) => Promise<T>): Promise<T> {
@@ -134,8 +117,8 @@ export class Database {
   }
 
   async dispose(): Promise<void> {
-    this.#store?.dispose()
-    this.#store = undefined
+    await this.#adapter?.dispose()
+    this.#adapter = undefined
   }
 }
 

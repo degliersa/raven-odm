@@ -5,6 +5,8 @@ import {
   DocumentStore,
   type IDocumentStore,
 } from 'ravendb'
+import { createDatabase, type Database, type DatabaseOptions } from '../src/index'
+import { InMemoryDatabaseAdapter } from '../src/in-memory-adapter'
 
 export const RAVENDB_URL = process.env.RAVENDB_URL ?? 'http://127.0.0.1:8099'
 
@@ -35,6 +37,35 @@ export async function withDatabase(): Promise<TestDatabase> {
         }),
       )
       admin.dispose()
+    },
+  }
+}
+
+export interface InMemoryTestDatabase {
+  readonly adapter: InMemoryDatabaseAdapter
+  readonly db: Database
+  dispose(): Promise<void>
+}
+
+export function withInMemoryDatabase(
+  options: Omit<DatabaseOptions, 'urls' | 'adapterFactory'>,
+): InMemoryTestDatabase {
+  const adapter = new InMemoryDatabaseAdapter({
+    urls: ['memory://raven-odm'],
+    database: options.database,
+    authOptions: undefined,
+    optimisticConcurrency: options.optimisticConcurrency ?? false,
+  })
+  const db = createDatabase({
+    ...options,
+    urls: ['memory://raven-odm'],
+    adapterFactory: () => adapter,
+  })
+  return {
+    adapter,
+    db,
+    async dispose(): Promise<void> {
+      await db.dispose()
     },
   }
 }

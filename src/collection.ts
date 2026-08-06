@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { IDocumentSession } from 'ravendb'
 import { normalizeRavenError, RavenOdmError } from './errors'
+import type { CollectionDescriptor, RavenSessionPort } from './persistence'
 import { validate } from './validate'
 
 const METADATA_KEY = '@metadata'
@@ -39,13 +40,6 @@ export interface CollectionOptions<S extends DocumentSchema> {
   readonly validateOnRead?: boolean | undefined
 }
 
-/** ravendb's ObjectLiteralDescriptor, kept structural to avoid importing internals. */
-export interface CollectionDescriptor {
-  readonly name: string
-  isType(obj: object): boolean
-  construct(dto: object): object
-}
-
 export interface SessionOption {
   readonly session?: OdmSession | undefined
 }
@@ -59,18 +53,14 @@ export interface FindManyOptions<S extends DocumentSchema> extends SessionOption
   readonly take?: number | undefined
 }
 
-export interface OdmSession {
-  readonly raw: IDocumentSession
-  saveChanges(): Promise<void>
-  dispose(): void
-}
+export interface OdmSession extends RavenSessionPort<IDocumentSession> {}
 
 /** Set by createDatabase(); a collection is inert until then. */
 export interface CollectionBinding {
   readonly database: string
   readonly descriptor: CollectionDescriptor
   openSession(): OdmSession
-  generateDocumentId(document: object): Promise<string>
+  generateDocumentId(document: object, descriptor: CollectionDescriptor): Promise<string>
 }
 
 export class Collection<S extends DocumentSchema> {
@@ -170,7 +160,7 @@ export class Collection<S extends DocumentSchema> {
     } else if (this.#idStrategy === 'hilo') {
       try {
         Object.defineProperty(payload, this.#hiloMarker, { value: true })
-        id = await binding.generateDocumentId(payload)
+        id = await binding.generateDocumentId(payload, binding.descriptor)
       } catch (err) {
         throw normalizeRavenError(err, { collection: this.name })
       }
@@ -193,12 +183,12 @@ export class Collection<S extends DocumentSchema> {
     // session instead of trusting the value passed in.
     const run = async (s: OdmSession, flush: boolean): Promise<Doc<S>> => {
       try {
-        await s.raw.store(payload, id, binding.descriptor as never)
+        await s.store(payload, id, binding.descriptor)
         if (flush) await s.saveChanges()
       } catch (err) {
         throw normalizeRavenError(err, { collection: this.name, documentId: id })
       }
-      return { ...value, id: s.raw.advanced.getDocumentId(payload) ?? id } as Doc<S>
+      return { ...value, id: s.getDocumentId(payload) ?? id } as Doc<S>
     }
 
     if (opts.session) return run(opts.session, false)
@@ -213,7 +203,12 @@ export class Collection<S extends DocumentSchema> {
   async findById(id: string, opts: SessionOption = {}): Promise<Doc<S> | null> {
     const binding = this.#bound()
     return this.#withSession(opts.session, async (s) => {
-      const entity = await s.raw.load<Record<string, unknown>>(id, binding.descriptor as never)
+      let entity: Record<string, unknown> | null
+      try {
+        entity = await s.load(id, binding.descriptor)
+      } catch (err) {
+        throw normalizeRavenError(err, { collection: this.name, documentId: id })
+      }
       if (!entity) return null
       return this.#hydrate(entity)
     })
@@ -230,28 +225,29 @@ export class Collection<S extends DocumentSchema> {
   async findMany(opts: FindManyOptions<S> = {}): Promise<Doc<S>[]> {
     const binding = this.#bound()
     return this.#withSession(opts.session, async (s) => {
-      let q = s.raw.query<Record<string, unknown>>({
-        collection: this.name,
-        documentType: binding.descriptor as never,
-      })
-      const where = opts.where as Record<string, unknown> | undefined
-      if (where) {
-        let first = true
-        for (const [field, value] of Object.entries(where)) {
-          if (!first) q = q.andAlso()
-          q = q.whereEquals(field, value)
-          first = false
+      try {
+        let q = s.query(binding.descriptor, this.name)
+        const where = opts.where as Record<string, unknown> | undefined
+        if (where) {
+          let first = true
+          for (const [field, value] of Object.entries(where)) {
+            if (!first) q = q.andAlso()
+            q = q.whereEquals(field, value)
+            first = false
+          }
         }
+        if (opts.orderBy) {
+          q = opts.orderBy.descending
+            ? q.orderByDescending(opts.orderBy.field)
+            : q.orderBy(opts.orderBy.field)
+        }
+        if (opts.skip !== undefined) q = q.skip(opts.skip)
+        if (opts.take !== undefined) q = q.take(opts.take)
+        const rows = await q.all()
+        return Promise.all(rows.map((r) => this.#hydrate(r)))
+      } catch (err) {
+        throw normalizeRavenError(err, { collection: this.name })
       }
-      if (opts.orderBy) {
-        q = opts.orderBy.descending
-          ? q.orderByDescending(opts.orderBy.field)
-          : q.orderBy(opts.orderBy.field)
-      }
-      if (opts.skip !== undefined) q = q.skip(opts.skip)
-      if (opts.take !== undefined) q = q.take(opts.take)
-      const rows = await q.all()
-      return Promise.all(rows.map((r) => this.#hydrate(r)))
     })
   }
 
@@ -262,7 +258,12 @@ export class Collection<S extends DocumentSchema> {
   ): Promise<Doc<S>> {
     const binding = this.#bound()
     return this.#withSession(opts.session, async (s) => {
-      const entity = await s.raw.load<Record<string, unknown>>(id, binding.descriptor as never)
+      let entity: Record<string, unknown> | null
+      try {
+        entity = await s.load(id, binding.descriptor)
+      } catch (err) {
+        throw normalizeRavenError(err, { collection: this.name, documentId: id })
+      }
       if (!entity) {
         throw new RavenOdmError('document_not_found', `Document "${id}" was not found`, {
           collection: this.name,
@@ -291,7 +292,7 @@ export class Collection<S extends DocumentSchema> {
     this.#bound()
     await this.#withSession(opts.session, async (s) => {
       try {
-        await s.raw.delete(id)
+        await s.delete(id)
       } catch (err) {
         throw normalizeRavenError(err, { collection: this.name, documentId: id })
       }

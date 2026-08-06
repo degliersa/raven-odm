@@ -269,10 +269,11 @@ npm run typecheck
 npm run typecheck:examples
 npm run build
 npm test
+npm run test:unit
 npm run check:pack
 ```
 
-The integration suite uses `RAVENDB_URL` when it is set. Without that variable, Vitest starts `ravendb/ravendb:latest` on port 8099 and removes only the container it started.
+`npm run test:unit` exercises ODM orchestration against the in-memory adapter and does not require Docker. The full `npm test` command still runs the RavenDB integration suite. When `RAVENDB_URL` is set, the integration suite uses that server; otherwise, Vitest starts `ravendb/ravendb:latest` on port 8099 and removes only the container it started.
 
 ## Contributing
 

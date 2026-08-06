@@ -1,5 +1,4 @@
 export type {
-  CollectionDescriptor,
   CollectionOptions,
   Doc,
   DocumentSchema,
@@ -12,6 +11,7 @@ export type {
 export { Collection, defineCollection } from './collection'
 export type { DatabaseOptions } from './database'
 export { createDatabase, Database } from './database'
+export type { CollectionDescriptor } from './persistence'
 export type { RavenOdmErrorCode, RavenOdmErrorContext } from './errors'
 export {
   ConcurrencyConflictError,
