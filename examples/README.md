@@ -22,7 +22,7 @@ Each validator example defines a small `Users` collection with a different Stand
 
 ## Run an example locally
 
-From the `raven-odm` directory:
+From the repository root:
 
 ```bash
 npm install

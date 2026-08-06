@@ -17,10 +17,9 @@ Requirements:
 - npm
 - Docker, for the RavenDB integration suite
 
-Install dependencies from the project directory:
+Install dependencies from the repository root:
 
 ```bash
-cd raven-odm
 npm ci
 ```
 
@@ -29,6 +28,7 @@ Run the quality gates:
 ```bash
 npm run lint
 npm run typecheck
+npm run typecheck:examples
 npm run build
 npm test
 npm run check:pack
@@ -70,6 +70,8 @@ npm run changeset
 ```
 
 Select `@degliersa/raven-odm`, choose the appropriate semver bump, and describe the behavior in user-facing language. Do not edit generated versions or `CHANGELOG.md` manually. The release workflow versions and publishes packages from Changesets while the repository is in `alpha` prerelease mode.
+
+The npm package is published through npm Trusted Publishing. Configure the package's trusted publisher for GitHub Actions with user or organization `degliersa`, repository `raven-odm`, and workflow filename `release.yml`; no `NPM_TOKEN` secret is required.
 
 Documentation-only changes and test-only changes normally do not need a Changeset unless they alter the published package or its supported workflow.
 

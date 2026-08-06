@@ -101,8 +101,7 @@ The Zod example uses Zod 4's top-level `z.email()` API. Zod 3.24 remains support
 
 ## IDs
 
-The default `idStrategy: 'uuid'` creates a known client-side ID in the form `<collection>/<uuid>`. This works when creating documents in an external session.
-
+The default `idStrategy: 'uuid'` intentionally creates a known client-side ID in the form `<collection>/<uuid>`. This keeps the document ID available before `saveChanges()` and works when creating documents in an external session. HiLo remains available as an explicit opt-in when RavenDB-managed ranges are preferred.
 Use `idGenerator` for application-defined IDs. It receives the validated document, collection name, and database name; its result takes precedence over `idStrategy`:
 
 ```ts
@@ -182,7 +181,7 @@ Returned documents are flat validated copies, not tracked entities. RavenDB meta
 
 ## Development
 
-From the `raven-odm` directory:
+From the repository root:
 
 ```bash
 npm ci
