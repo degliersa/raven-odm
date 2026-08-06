@@ -97,7 +97,7 @@ Any validator implementing Standard Schema can be passed as `schema`. These vali
 | [ArkType](https://github.com/arktypeio/arktype) | 2.0 | [`examples/arktype.ts`](examples/arktype.ts) |
 | [Yup](https://github.com/jquense/yup) | 1.7.0 | [`examples/yup.ts`](examples/yup.ts) |
 
-The validator is a dependency of your application, not a dependency of the ODM core. See [`examples/README.md`](examples/README.md) for setup and execution instructions.
+The Zod example uses Zod 4's top-level `z.email()` API. Zod 3.24 remains supported by the ODM; use the corresponding email schema API for applications pinned to Zod 3. The validator is a dependency of your application, not a dependency of the ODM core. See [`examples/README.md`](examples/README.md) for setup and execution instructions.
 
 ## IDs
 
