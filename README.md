@@ -1,0 +1,145 @@
+# @degliersa/raven-odm
+
+A thin, typed ODM over the official RavenDB Node.js client. Documents are validated through the [Standard Schema](https://standardschema.dev/) interface, so the package is independent of a particular validator.
+
+## Install
+
+```bash
+npm install @degliersa/raven-odm ravendb zod
+```
+
+RavenDB and `@degliersa/raven-odm` require Node.js 22 or newer.
+
+## Complete example
+
+```ts
+import { z } from 'zod'
+import { createDatabase, defineCollection } from '@degliersa/raven-odm'
+
+const Users = defineCollection({
+  name: 'Users',
+  schema: z.object({
+    name: z.string().min(1),
+    email: z.email(),
+  }),
+})
+
+const db = createDatabase({
+  urls: ['http://127.0.0.1:8080'],
+  database: 'example',
+  collections: [Users],
+})
+
+await db.connect()
+
+const created = await Users.create({ name: 'Maria', email: 'maria@example.com' })
+const loaded = await Users.findById(created.id)
+const updated = await Users.update(created.id, { name: 'Maria Silva' })
+const matching = await Users.findMany({ where: { email: 'maria@example.com' } })
+await Users.delete(created.id)
+
+console.log({ created, loaded, updated, matching })
+await db.dispose()
+```
+
+Collection names are exact. A collection named `Order` is stored in RavenDB's `Order` collection, not an automatically pluralized `Orders` collection.
+
+## Supported validators
+
+Any Standard Schema implementation works. These minimum versions were verified:
+
+| Validator | Minimum version |
+| --- | ---: |
+| Zod | 3.24.0 |
+| Valibot | 1.0 |
+| ArkType | 2.0 |
+| Yup | 1.7.0 |
+
+## IDs
+
+The default `idStrategy: 'uuid'` creates a known client-side ID in the form `<collection>/<uuid>`. This works when creating documents in an external session.
+
+Use `idGenerator` for application-defined IDs. It receives the validated document, collection name, and database name; its result takes precedence over `idStrategy`.
+
+```ts
+const Users = defineCollection({
+  name: 'Users',
+  schema: userSchema,
+  idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
+})
+```
+
+Use `idStrategy: 'server'` to request RavenDB identities such as `Orders/1-A`. The ID is assigned during `saveChanges()`, so this strategy cannot be used with `create(data, { session })`; use a custom generator or the default UUID strategy for external sessions.
+
+## Sessions and unit of work
+
+Convenience CRUD methods open, save, and dispose a session automatically. Share an explicit session to group operations:
+
+```ts
+await db.transaction(async (session) => {
+  await Users.create({ name: 'Maria', email: 'maria@example.com' }, { session })
+  await Orders.create({ status: 'pending', total: 42 }, { session })
+})
+```
+
+`db.openSession()` returns an explicit session. Operations passed that session are not persisted until `session.saveChanges()`; disposing first discards pending changes.
+
+## Optimistic concurrency
+
+Set `optimisticConcurrency: true` to enable RavenDB optimistic concurrency for every session opened by the database:
+
+```ts
+const db = createDatabase({
+  urls,
+  database,
+  collections: [Users],
+  optimisticConcurrency: true,
+})
+```
+
+A stale save throws `ConcurrencyConflictError` with `code === 'concurrency_conflict'`. With the default `false`, RavenDB retains last-write-wins behavior.
+
+## Errors
+
+All RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`, `collection`, and `documentId` instead of matching RavenDB implementation-specific exception classes.
+
+| Code | Meaning |
+| --- | --- |
+| `validation_failed` | Input or read validation failed; `ValidationError.issues` contains the Standard Schema issues. |
+| `concurrency_conflict` | Optimistic concurrency rejected a stale write. |
+| `document_not_found` | An update targeted a missing document. |
+| `not_connected` | A database or collection was used before `connect()`. |
+| `already_bound` | A collection was attached to more than one database. |
+| `invalid_configuration` | Collection or database configuration is invalid. |
+| `raven_error` | An unclassified RavenDB client/server failure. |
+
+`findById` returns `null` for a missing document; it does not throw `document_not_found`.
+
+## Escape hatches
+
+Use `db.store` for the native `IDocumentStore`, or run a native operation in the session used by a collection:
+
+```ts
+await Users.raw(async (session) => {
+  const raw = await session.load('Users/1-A')
+  console.log(raw)
+})
+
+const nativeStore = db.store
+```
+
+## Document lifecycle
+
+Returned documents are flat validated copies, not tracked entities. RavenDB metadata is removed before validation and the public `id` is reattached afterward. Mutating a returned object does not schedule a database write; call `update`, use an explicit session, or use the raw escape hatch for persistence.
+
+## Development
+
+```bash
+npm run typecheck
+npm run lint
+npm run build
+npm test
+npm run check:pack
+```
+
+The integration suite uses a real RavenDB server. Set `RAVENDB_URL` to an existing server, or leave it unset and the test setup will start `ravendb/ravendb:latest` on port 8099 with Docker.
