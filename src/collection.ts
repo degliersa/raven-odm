@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { IDocumentSession } from 'ravendb'
-import { normalizeRavenError, RavenOdmError } from './errors'
+import { normalizeQueryError, normalizeRavenError, RavenOdmError } from './errors'
 import { validate } from './validate'
 
 const METADATA_KEY = '@metadata'
@@ -32,8 +32,11 @@ export interface CollectionOptions<S extends DocumentSchema> {
    *   an external session.
    * - 'server': RavenDB identity `<name>/1-A`; needs the save to resolve, so it is
    *   rejected when a `session` is supplied.
+   *
+   * Mutually exclusive with `idGenerator`.
    */
   readonly idStrategy?: 'uuid' | 'hilo' | 'server' | undefined
+  /** Supplies the id itself. Mutually exclusive with `idStrategy`. */
   readonly idGenerator?: IdGenerator<S> | undefined
   /** Validate documents coming back from the server. Default: false. */
   readonly validateOnRead?: boolean | undefined
@@ -57,6 +60,19 @@ export interface FindManyOptions<S extends DocumentSchema> extends SessionOption
     | undefined
   readonly skip?: number | undefined
   readonly take?: number | undefined
+  /**
+   * Wait for the index answering this query to catch up with earlier writes.
+   *
+   * A `where` or `orderBy` query is answered by a RavenDB auto-index, which is
+   * updated asynchronously, so by default it may not yet observe a document
+   * written moments earlier. `true` waits with the server's default timeout, a
+   * number waits that many milliseconds, and exhausting either raises
+   * `query_timeout`. Default: false, matching RavenDB.
+   *
+   * An unfiltered, unordered `findMany()` reads the collection directly and
+   * always observes prior writes, so this option is unnecessary there.
+   */
+  readonly waitForNonStaleResults?: boolean | number | undefined
 }
 
 export interface OdmSession {
@@ -91,6 +107,17 @@ export class Collection<S extends DocumentSchema> {
         'defineCollection requires a non-empty "name"',
       )
     }
+    // Both would resolve the same id, and only one of them can win. Refusing the
+    // pair keeps the winner from being a fact you can only learn by reading create().
+    if (options.idGenerator && options.idStrategy) {
+      throw new RavenOdmError(
+        'invalid_configuration',
+        `Collection "${options.name}" sets both "idGenerator" and "idStrategy". ` +
+          'They are mutually exclusive: keep "idGenerator" to supply ids yourself, or ' +
+          'keep "idStrategy" to let raven-odm or RavenDB assign them.',
+        { collection: options.name },
+      )
+    }
     this.name = options.name
     this.schema = options.schema
     this.#idGenerator = options.idGenerator
@@ -115,6 +142,17 @@ export class Collection<S extends DocumentSchema> {
       )
     }
     this.#binding = binding
+  }
+
+  /**
+   * Released by `Database.dispose()`, and only for the database that bound it,
+   * so a disposed database can be connected again and a collection is never
+   * detached from a database that is still live.
+   *
+   * @internal
+   */
+  unbind(): void {
+    this.#binding = undefined
   }
 
   #bound(): CollectionBinding {
@@ -234,6 +272,9 @@ export class Collection<S extends DocumentSchema> {
         collection: this.name,
         documentType: binding.descriptor as never,
       })
+      const wait = opts.waitForNonStaleResults
+      if (wait === true) q = q.waitForNonStaleResults()
+      else if (typeof wait === 'number') q = q.waitForNonStaleResults(wait)
       const where = opts.where as Record<string, unknown> | undefined
       if (where) {
         let first = true
@@ -250,7 +291,12 @@ export class Collection<S extends DocumentSchema> {
       }
       if (opts.skip !== undefined) q = q.skip(opts.skip)
       if (opts.take !== undefined) q = q.take(opts.take)
-      const rows = await q.all()
+      let rows: Record<string, unknown>[]
+      try {
+        rows = await q.all()
+      } catch (err) {
+        throw normalizeQueryError(err, { collection: this.name })
+      }
       return Promise.all(rows.map((r) => this.#hydrate(r)))
     })
   }
