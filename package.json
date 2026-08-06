@@ -1,0 +1,65 @@
+{
+  "name": "@degliersa/raven-odm",
+  "version": "0.0.0",
+  "description": "Thin typed ODM over the official RavenDB Node.js client, validated with Standard Schema.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/degliersa/raven-odm.git"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "check:pack": "npm run build && npm pack --pack-destination /tmp && publint /tmp/degliersa-raven-odm-*.tgz && attw /tmp/degliersa-raven-odm-*.tgz",
+    "changeset": "changeset"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0"
+  },
+  "peerDependencies": {
+    "ravendb": "^7.0.0"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
+    "@biomejs/biome": "2.5.7",
+    "@changesets/cli": "2.31.1",
+    "@standard-schema/spec": "1.1.0",
+    "publint": "0.3.23",
+    "ravendb": "7.2.6",
+    "tsdown": "0.22.14",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "valibot": "latest",
+    "zod": "latest"
+  }
+}
