@@ -82,7 +82,6 @@ export class Collection<S extends DocumentSchema> {
   #idStrategy: 'uuid' | 'hilo' | 'server'
   #validateOnRead: boolean
   #binding: CollectionBinding | undefined
-  #hiloMarker = Symbol('raven-odm-hilo')
 
   constructor(options: CollectionOptions<S>) {
     if (!options.name) {
@@ -96,11 +95,16 @@ export class Collection<S extends DocumentSchema> {
     this.#idGenerator = options.idGenerator
     this.#idStrategy = options.idStrategy ?? 'uuid'
     this.#validateOnRead = options.validateOnRead ?? false
-    // The marker is only present on payloads being assigned a HiLo ID. This keeps
-    // normal object literals from being shape-sniffed into a collection.
+    // RavenDB's ObjectLiteralDescriptor.isType is used when the client must
+    // recover a type from a bare entity (getEntityTypeDescriptor /
+    // getCollectionNameForEntity), e.g. conventions.generateDocumentId for
+    // HiLo. Returning false keeps plain objects from being shape-sniffed into
+    // a collection: ODM store/load/query always pass this descriptor explicitly
+    // (getCollectionNameForType / registry), and HiLo collection resolution is
+    // handled by Database via findCollectionNameForObjectLiteral — not isType.
     this.descriptor = {
       name: options.name,
-      isType: (obj) => Reflect.get(obj, this.#hiloMarker) === true,
+      isType: (_obj) => false,
       construct: (dto) => dto,
     }
   }
@@ -169,7 +173,6 @@ export class Collection<S extends DocumentSchema> {
       id = `${this.name}/${randomUUID()}`
     } else if (this.#idStrategy === 'hilo') {
       try {
-        Object.defineProperty(payload, this.#hiloMarker, { value: true })
         id = await binding.generateDocumentId(payload)
       } catch (err) {
         throw normalizeRavenError(err, { collection: this.name })

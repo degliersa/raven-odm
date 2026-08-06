@@ -42,6 +42,16 @@ export class Database {
   #options: DatabaseOptions
   /** descriptor -> exact collection name; read live by the findCollectionName override. */
   #registry = new Map<CollectionDescriptor, string>()
+  /**
+   * Entities currently undergoing HiLo id generation.
+   * RavenDB resolves object-literal collection names via
+   * conventions.getCollectionNameForEntity → getEntityTypeDescriptor (isType)
+   * or findCollectionNameForObjectLiteral. ODM descriptors intentionally keep
+   * isType() === false so plain objects are never sniffed into a collection;
+   * this map is the adapter-side side-channel used only while generateDocumentId
+   * runs (see connect() findCollectionNameForObjectLiteral hook).
+   */
+  #hiloEntities = new WeakMap<object, string>()
 
   constructor(options: DatabaseOptions) {
     if (!options.database) {
@@ -85,6 +95,15 @@ export class Database {
     store.conventions.findCollectionName = (descriptor) =>
       this.#registry.get(descriptor as CollectionDescriptor) ?? fallback(descriptor)
 
+    // HiLo (conventions.generateDocumentId) calls getCollectionNameForEntity on a
+    // plain object. With isType always false, RavenDB falls through to this hook
+    // instead of matching an arbitrary registered ObjectLiteralDescriptor.
+    const previousObjectLiteral = store.conventions.findCollectionNameForObjectLiteral
+    store.conventions.findCollectionNameForObjectLiteral = (entity) =>
+      this.#hiloEntities.get(entity) ??
+      previousObjectLiteral?.(entity) ??
+      (null as unknown as string)
+
     for (const collection of this.#options.collections) this.#register(store, collection)
 
     try {
@@ -111,8 +130,14 @@ export class Database {
       database: this.database,
       descriptor: collection.descriptor,
       openSession: () => this.openSession(),
-      generateDocumentId: (document) =>
-        store.conventions.generateDocumentId(this.database, document),
+      generateDocumentId: async (document) => {
+        this.#hiloEntities.set(document, collection.name)
+        try {
+          return await store.conventions.generateDocumentId(this.database, document)
+        } finally {
+          this.#hiloEntities.delete(document)
+        }
+      },
     })
   }
 
