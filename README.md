@@ -1,6 +1,85 @@
 # @degliersa/raven-odm
 
+[Leia este README em português](./README.pt-BR.md)
+
 `@degliersa/raven-odm` is a thin, typed object-document mapper for the official RavenDB Node.js client. It adds a small collection API, Standard Schema validation, predictable IDs, explicit sessions, and normalized errors without hiding RavenDB.
+
+## Why Raven ODM?
+
+Creating a new RavenDB document type directly with the official client is flexible, but the application must decide where to keep the collection name, document shape, validation rules, ID behavior, session boundaries, and query code. Repeating those decisions for every document type creates infrastructure code that is easy to drift.
+
+Raven ODM centralizes the collection definition, schema, validation, and RavenDB access in one typed object. This reduces the boilerplate needed to add documents without requiring a class, a hand-written mapping layer, and a separate validation setup for every document type. TypeScript can infer the document shape from the schema, while plain objects remain the normal data model.
+
+### Official RavenDB client vs. Raven ODM
+
+With the official RavenDB client, you work directly with `DocumentStore`, document sessions, `store`, `load`, `query`, and `saveChanges()`. You get the full RavenDB API and decide how your application organizes models, validation, IDs, and persistence.
+
+With Raven ODM, you still use that same official client underneath. You define a collection with `defineCollection`, register it with `createDatabase`, and use typed methods such as `create`, `findById`, and `findMany`. The ODM validates input through Standard Schema, manages the usual session lifecycle for convenience methods, and keeps `db.store` and `raw` available when native RavenDB access is needed.
+
+Raven ODM does not replace the RavenDB Client. It is a thin modeling and validation layer over the official client.
+
+### A small, real example
+
+This definition uses the current `defineCollection`, `createDatabase`, `create`, and `findMany` APIs:
+
+```ts
+import { z } from 'zod'
+import { createDatabase, defineCollection } from '@degliersa/raven-odm'
+
+const Users = defineCollection({
+  name: 'Users',
+  schema: z.object({
+    name: z.string().min(1),
+    email: z.email(),
+  }),
+})
+
+const db = createDatabase({
+  urls: ['http://127.0.0.1:8080'],
+  database: 'example',
+  collections: [Users],
+})
+
+await db.connect()
+
+const created = await Users.create({
+  name: 'Maria',
+  email: 'maria@example.com',
+})
+
+const byId = await Users.findById(created.id)
+const matching = await Users.findMany({
+  where: { email: 'maria@example.com' },
+})
+
+console.log({ created, byId, matching })
+await db.dispose()
+```
+
+The `schema` is the single source for validation and inferred document types. The collection name is explicit, and `create` returns a document with an `id`.
+
+| Approach | New document | Validation | Typing | Repetitive code |
+|-----------|----------------|-----------|---------|-------------------|
+| Direct RavenDB Client | Organize manually | Organize manually | Choose and maintain manually | More application-owned plumbing |
+| Raven ODM | Define a collection and schema | Standard Schema at the collection boundary | Inferred from the schema | Less repeated setup |
+
+### Benefits
+
+- add new document types by defining a collection and schema quickly;
+- reuse schemas as ordinary TypeScript values;
+- keep validation independent of a specific provider through Standard Schema;
+- use the compatible validators already covered by the project: Zod, Valibot, ArkType, and Yup;
+- infer document types from the schema, including the public `id`;
+- reduce coupling between domain data and RavenDB infrastructure;
+- use plain TypeScript objects instead of making a class mandatory for every document.
+
+### When to use
+
+Use Raven ODM when a TypeScript project wants explicit collection names, reusable schemas, consistent validation, typed CRUD, and conventions around sessions and document IDs while retaining access to the official RavenDB client.
+
+### When not to use
+
+The official RavenDB client may be sufficient when the application is built around advanced queries, highly dynamic document models, or direct use of RavenDB-specific features that should not pass through an ODM abstraction. Raven ODM keeps a native escape hatch, but it should not be added solely to hide APIs the application needs to use directly.
 
 The project is designed for applications that want:
 
