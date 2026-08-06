@@ -1,0 +1,33 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: raven-odm
+    services:
+      ravendb:
+        image: ravendb/ravendb:latest
+        ports: ["8080:8080"]
+        env:
+          RAVEN_Setup_Mode: None
+          RAVEN_License_Eula_Accepted: "true"
+          RAVEN_Security_UnsecuredAccessAllowed: PublicNetwork
+    env:
+      RAVENDB_URL: http://127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: raven-odm/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: npm run check:pack
