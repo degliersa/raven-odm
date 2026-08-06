@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { IDocumentSession } from 'ravendb'
 import { normalizeRavenError, RavenOdmError } from './errors'
+import { type IdStrategy, selectIdStrategy } from './id-strategy'
 import { validate } from './validate'
 
 const METADATA_KEY = '@metadata'
@@ -80,8 +80,7 @@ export class Collection<S extends DocumentSchema> {
   readonly schema: S
   readonly descriptor: CollectionDescriptor
 
-  #idGenerator: IdGenerator<S> | undefined
-  #idStrategy: 'uuid' | 'hilo' | 'server'
+  #resolveId: IdStrategy<S>
   #validateOnRead: boolean
   #binding: CollectionBinding | undefined
 
@@ -94,8 +93,10 @@ export class Collection<S extends DocumentSchema> {
     }
     this.name = options.name
     this.schema = options.schema
-    this.#idGenerator = options.idGenerator
-    this.#idStrategy = options.idStrategy ?? 'uuid'
+    this.#resolveId = selectIdStrategy({
+      idStrategy: options.idStrategy,
+      idGenerator: options.idGenerator,
+    })
     this.#validateOnRead = options.validateOnRead ?? false
     // RavenDB calls isType() to recover a descriptor from a bare object, which
     // this ODM needs in exactly one place: resolving the collection name while
@@ -164,35 +165,13 @@ export class Collection<S extends DocumentSchema> {
     const payload = { ...(value as Record<string, unknown>) }
     delete payload.id
 
-    let id: string | undefined
-    if (this.#idGenerator) {
-      id = await this.#idGenerator({
-        document: value,
-        collection: this.name,
-        database: binding.database,
-      })
-    } else if (this.#idStrategy === 'uuid') {
-      id = `${this.name}/${randomUUID()}`
-    } else if (this.#idStrategy === 'hilo') {
-      try {
-        id = await binding.generateDocumentId()
-      } catch (err) {
-        throw normalizeRavenError(err, { collection: this.name })
-      }
-    } else {
-      if (opts.session) {
-        throw new RavenOdmError(
-          'invalid_configuration',
-          'Collection "' +
-            this.name +
-            "\" uses idStrategy 'server', whose id is only assigned by " +
-            "saveChanges(). Pass an idGenerator or use idStrategy 'uuid' to create documents inside " +
-            'an external session.',
-          { collection: this.name },
-        )
-      }
-      id = `${this.name}/` // RavenDB identity prefix -> Users/1-A
-    }
+    const id = await this.#resolveId({
+      document: value,
+      collection: this.name,
+      database: binding.database,
+      sessionProvided: opts.session !== undefined,
+      reserveId: () => binding.generateDocumentId(),
+    })
 
     // The identity-prefix id only exists after the flush, so read it back from the
     // session instead of trusting the value passed in.
