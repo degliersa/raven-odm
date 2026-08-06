@@ -4,5 +4,7 @@
   "initialVersions": {
     "@degliersa/raven-odm": "0.0.0"
   },
-  "changesets": []
+  "changesets": [
+    "initial-alpha-release"
+  ]
 }

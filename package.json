@@ -1,6 +1,6 @@
 {
   "name": "@degliersa/raven-odm",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.0",
   "description": "Thin typed ODM over the official RavenDB Node.js client, validated with Standard Schema.",
   "type": "module",
   "main": "./dist/index.cjs",
