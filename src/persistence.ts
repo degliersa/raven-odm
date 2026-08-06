@@ -24,10 +24,7 @@ export interface RavenSessionPort<TRaw = IDocumentSession> {
     id: string | undefined,
     descriptor: CollectionDescriptor,
   ): Promise<void> | void
-  load(
-    id: string,
-    descriptor: CollectionDescriptor,
-  ): Promise<Record<string, unknown> | null>
+  load(id: string, descriptor: CollectionDescriptor): Promise<Record<string, unknown> | null>
   query(descriptor: CollectionDescriptor, collection: string): RavenQueryPort
   delete(id: string): Promise<void> | void
   getDocumentId(entity: object): string | undefined
@@ -42,10 +39,7 @@ export interface DatabaseAdapterOptions {
   readonly optimisticConcurrency: boolean
 }
 
-export interface DatabaseAdapter<
-  TRawStore = IDocumentStore,
-  TRawSession = IDocumentSession,
-> {
+export interface DatabaseAdapter<TRawStore = IDocumentStore, TRawSession = IDocumentSession> {
   readonly raw: TRawStore
   register(descriptor: CollectionDescriptor, name: string): void
   openSession(): RavenSessionPort<TRawSession>
@@ -57,6 +51,4 @@ export interface DatabaseAdapter<
   dispose(): Promise<void> | void
 }
 
-export type DatabaseAdapterFactory = (
-  options: DatabaseAdapterOptions,
-) => DatabaseAdapter
+export type DatabaseAdapterFactory = (options: DatabaseAdapterOptions) => DatabaseAdapter

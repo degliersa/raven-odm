@@ -73,10 +73,7 @@ class RavenSessionAdapter implements RavenSessionPort<IDocumentSession> {
     this.raw.store(entity, id, descriptor as never)
   }
 
-  load(
-    id: string,
-    descriptor: CollectionDescriptor,
-  ): Promise<Record<string, unknown> | null> {
+  load(id: string, descriptor: CollectionDescriptor): Promise<Record<string, unknown> | null> {
     return this.raw.load<Record<string, unknown>>(id, descriptor as never)
   }
 
@@ -161,8 +158,6 @@ export class RavenDatabaseAdapter implements DatabaseAdapter {
   }
 }
 
-export function createRavenDatabaseAdapter(
-  options: DatabaseAdapterOptions,
-): DatabaseAdapter {
+export function createRavenDatabaseAdapter(options: DatabaseAdapterOptions): DatabaseAdapter {
   return new RavenDatabaseAdapter(options)
 }

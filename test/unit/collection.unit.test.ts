@@ -1,11 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import {
-  type Collection,
-  ValidationError,
-  type Database,
-  defineCollection,
-} from '../../src/index'
+import { type Collection, type Database, defineCollection, ValidationError } from '../../src/index'
 import { withInMemoryDatabase } from '../helpers'
 
 const userSchema = z.object({ name: z.string().min(1), email: z.email() })
@@ -115,7 +110,9 @@ describe('Collection unit behavior with the in-memory adapter', () => {
       name: 'Legacy',
       email: 'invalid',
     })
-    await expect(LegacyUsers.findById('LegacyUsers/invalid')).rejects.toBeInstanceOf(ValidationError)
+    await expect(LegacyUsers.findById('LegacyUsers/invalid')).rejects.toBeInstanceOf(
+      ValidationError,
+    )
   })
 
   it('can open a second adapter-backed database without RavenDB', async () => {

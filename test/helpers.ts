@@ -5,8 +5,8 @@ import {
   DocumentStore,
   type IDocumentStore,
 } from 'ravendb'
-import { createDatabase, type Database, type DatabaseOptions } from '../src/index'
 import { InMemoryDatabaseAdapter } from '../src/in-memory-adapter'
+import { createDatabase, type Database, type DatabaseOptions } from '../src/index'
 
 export const RAVENDB_URL = process.env.RAVENDB_URL ?? 'http://127.0.0.1:8099'
 

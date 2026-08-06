@@ -1,11 +1,7 @@
 import type { IAuthOptions, IDocumentStore } from 'ravendb'
 import type { CollectionBinding, OdmSession } from './collection'
 import { RavenOdmError } from './errors'
-import type {
-  CollectionDescriptor,
-  DatabaseAdapter,
-  DatabaseAdapterFactory,
-} from './persistence'
+import type { CollectionDescriptor, DatabaseAdapter, DatabaseAdapterFactory } from './persistence'
 import { createRavenDatabaseAdapter } from './ravendb-adapter'
 
 export interface DatabaseOptions {

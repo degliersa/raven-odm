@@ -11,7 +11,6 @@ export type {
 export { Collection, defineCollection } from './collection'
 export type { DatabaseOptions } from './database'
 export { createDatabase, Database } from './database'
-export type { CollectionDescriptor } from './persistence'
 export type { RavenOdmErrorCode, RavenOdmErrorContext } from './errors'
 export {
   ConcurrencyConflictError,
@@ -21,3 +20,4 @@ export {
   RavenOdmError,
   ValidationError,
 } from './errors'
+export type { CollectionDescriptor } from './persistence'

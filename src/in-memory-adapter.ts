@@ -37,9 +37,7 @@ class InMemoryQuery implements RavenQueryPort {
   readonly #session: InMemorySessionAdapter
   readonly #collection: string
   readonly #filters: ReadonlyArray<readonly [string, unknown]>
-  readonly #ordering:
-    | { readonly field: string; readonly descending: boolean }
-    | undefined
+  readonly #ordering: { readonly field: string; readonly descending: boolean } | undefined
   readonly #skip: number
   readonly #take: number | undefined
 
@@ -47,9 +45,7 @@ class InMemoryQuery implements RavenQueryPort {
     session: InMemorySessionAdapter,
     collection: string,
     filters: ReadonlyArray<readonly [string, unknown]> = [],
-    ordering:
-      | { readonly field: string; readonly descending: boolean }
-      | undefined = undefined,
+    ordering: { readonly field: string; readonly descending: boolean } | undefined = undefined,
     skip = 0,
     take: number | undefined = undefined,
   ) {
@@ -133,13 +129,14 @@ class InMemorySessionAdapter implements RavenSessionPort<IDocumentSession> {
   constructor(adapter: InMemoryDatabaseAdapter) {
     this.#adapter = adapter
     this.raw = {
-      load: (id: string) => this.load(id, { name: '', isType: () => true, construct: (dto) => dto }),
+      load: (id: string) =>
+        this.load(id, { name: '', isType: () => true, construct: (dto) => dto }),
       store: (entity: Record<string, unknown>, id?: string) =>
-        this.store(
-          entity,
-          id,
-          { name: String(id?.split('/')[0] ?? ''), isType: () => true, construct: (dto) => dto },
-        ),
+        this.store(entity, id, {
+          name: String(id?.split('/')[0] ?? ''),
+          isType: () => true,
+          construct: (dto) => dto,
+        }),
       delete: (id: string) => this.delete(id),
       query: ({ collection }: { collection: string }) =>
         new InMemoryQuery(this, collection) as unknown,
@@ -290,8 +287,6 @@ export class InMemoryDatabaseAdapter implements DatabaseAdapter {
   }
 }
 
-export function createInMemoryDatabaseAdapter(
-  options: DatabaseAdapterOptions,
-): DatabaseAdapter {
+export function createInMemoryDatabaseAdapter(options: DatabaseAdapterOptions): DatabaseAdapter {
   return new InMemoryDatabaseAdapter(options)
 }
