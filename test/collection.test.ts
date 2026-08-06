@@ -3,8 +3,8 @@ import { z } from 'zod'
 import {
   type Collection,
   createDatabase,
-  type Database,
   defineCollection,
+  type RavenDatabase,
   ValidationError,
 } from '../src/index'
 import { type TestDatabase, withDatabase } from './helpers'
@@ -12,24 +12,28 @@ import { type TestDatabase, withDatabase } from './helpers'
 const userSchema = z.object({ name: z.string().min(1), email: z.email() })
 const orderSchema = z.object({ status: z.enum(['pending', 'paid']), total: z.number() })
 
+type AppDatabase = RavenDatabase<{
+  users: Collection<typeof userSchema>
+  order: Collection<typeof orderSchema>
+}>
+
 describe('Collection CRUD', () => {
   let testDatabase: TestDatabase
-  let db: Database
-  let Users: Collection<typeof userSchema>
-  let Order: Collection<typeof orderSchema>
+  let db: AppDatabase
 
   beforeEach(async () => {
     testDatabase = await withDatabase()
-    Users = defineCollection({
-      name: 'Users',
-      schema: userSchema,
-      idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
-    })
-    Order = defineCollection({ name: 'Order', schema: orderSchema })
     db = createDatabase({
       urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8099'],
       database: testDatabase.name,
-      collections: [Users, Order],
+      collections: {
+        users: defineCollection({
+          name: 'Users',
+          schema: userSchema,
+          idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
+        }),
+        order: defineCollection({ name: 'Order', schema: orderSchema }),
+      },
     })
     await db.connect()
   })
@@ -40,17 +44,17 @@ describe('Collection CRUD', () => {
   })
 
   it('creates with a custom id and exact collection metadata', async () => {
-    const user = await Users.create({ name: 'Maria', email: 'maria@example.com' })
+    const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' })
     expect(user).toEqual({ name: 'Maria', email: 'maria@example.com', id: 'user_maria' })
 
-    const metadata = await Users.raw(async (session) => {
+    const metadata = await db.users.raw(async (session) => {
       const entity = await session.load<Record<string, unknown>>(user.id)
       return entity?.['@metadata']
     })
     expect(metadata).toMatchObject({ '@collection': 'Users' })
 
-    const order = await Order.create({ status: 'pending', total: 12 })
-    const orderMetadata = await Order.raw(async (session) => {
+    const order = await db.order.create({ status: 'pending', total: 12 })
+    const orderMetadata = await db.order.raw(async (session) => {
       const entity = await session.load<Record<string, unknown>>(order.id)
       return entity?.['@metadata']
     })
@@ -58,87 +62,96 @@ describe('Collection CRUD', () => {
   })
 
   it('rejects invalid create before writing', async () => {
-    await expect(Users.create({ name: '', email: 'nope' })).rejects.toMatchObject({
+    await expect(db.users.create({ name: '', email: 'nope' })).rejects.toMatchObject({
       code: 'validation_failed',
       issues: { length: 2 },
     })
-    expect(await Users.findMany()).toEqual([])
+    expect(await db.users.findMany()).toEqual([])
   })
 
   it('reads a flat schema copy and returns null for missing ids', async () => {
-    const user = await Users.create({ name: 'Maria', email: 'maria@example.com' })
-    expect(Object.keys((await Users.findById(user.id)) ?? {}).sort()).toEqual([
+    const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' })
+    expect(Object.keys((await db.users.findById(user.id)) ?? {}).sort()).toEqual([
       'email',
       'id',
       'name',
     ])
-    expect(await Users.findById('user_missing')).toBeNull()
+    expect(await db.users.findById('user_missing')).toBeNull()
   })
 
   it('merges updates, validates the result, and reports missing documents', async () => {
-    const user = await Users.create({ name: 'Maria', email: 'maria@example.com' })
-    await expect(Users.update(user.id, { name: 'Maria Silva' })).resolves.toEqual({
+    const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' })
+    await expect(db.users.update(user.id, { name: 'Maria Silva' })).resolves.toEqual({
       name: 'Maria Silva',
       email: 'maria@example.com',
       id: user.id,
     })
-    await expect(Users.findById(user.id)).resolves.toEqual({
+    await expect(db.users.findById(user.id)).resolves.toEqual({
       name: 'Maria Silva',
       email: 'maria@example.com',
       id: user.id,
     })
-    await expect(Users.update(user.id, { email: 'bad' })).rejects.toBeInstanceOf(ValidationError)
-    await expect(Users.update('user_missing', { name: 'Nobody' })).rejects.toMatchObject({
+    await expect(db.users.update(user.id, { email: 'bad' })).rejects.toBeInstanceOf(ValidationError)
+    await expect(db.users.update('user_missing', { name: 'Nobody' })).rejects.toMatchObject({
       code: 'document_not_found',
     })
   })
 
   it('finds by filters, limits, and returns all rows without a take', async () => {
-    await Users.create({ name: 'Alice', email: 'alice@example.com' })
-    await Users.create({ name: 'Bob', email: 'bob@example.com' })
-    await Users.create({ name: 'Carol', email: 'carol@example.com' })
-    expect((await Users.findMany({ where: { name: 'Bob' } })).map(({ name }) => name)).toEqual([
+    await db.users.create({ name: 'Alice', email: 'alice@example.com' })
+    await db.users.create({ name: 'Bob', email: 'bob@example.com' })
+    await db.users.create({ name: 'Carol', email: 'carol@example.com' })
+    expect((await db.users.findMany({ where: { name: 'Bob' } })).map(({ name }) => name)).toEqual([
       'Bob',
     ])
-    expect((await Users.findMany({ orderBy: { field: 'name' }, take: 2 })).length).toBe(2)
-    expect((await Users.findMany()).length).toBe(3)
+    expect((await db.users.findMany({ orderBy: { field: 'name' }, take: 2 })).length).toBe(2)
+    expect((await db.users.findMany()).length).toBe(3)
   })
 
   it('deletes documents', async () => {
-    const user = await Users.create({ name: 'Maria', email: 'maria@example.com' })
-    await Users.delete(user.id)
-    expect(await Users.findById(user.id)).toBeNull()
+    const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' })
+    await db.users.delete(user.id)
+    expect(await db.users.findById(user.id)).toBeNull()
   })
 
   it('validates legacy documents when validateOnRead is enabled', async () => {
     await db.dispose()
-    const StrictUsers = defineCollection({
-      name: 'Users',
-      schema: userSchema,
-      validateOnRead: true,
-    })
-    db = createDatabase({
+    const strict = createDatabase({
       urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8099'],
       database: testDatabase.name,
-      collections: [StrictUsers],
+      collections: {
+        users: defineCollection({
+          name: 'Users',
+          schema: userSchema,
+          validateOnRead: true,
+        }),
+      },
     })
-    await db.connect()
-    await StrictUsers.raw(async (session) => {
-      const payload = { name: 'Legacy', email: 'legacy@example.com' }
-      await session.store(payload, 'Users/legacy')
-      await session.saveChanges()
-    })
-    await StrictUsers.raw(async (session) => {
-      const entity = await session.load<Record<string, unknown>>('Users/legacy')
-      if (!entity) throw new Error('legacy document was not created')
-      entity.email = 'invalid'
-      await session.saveChanges()
-    })
-    await expect(StrictUsers.findById('Users/legacy')).rejects.toBeInstanceOf(ValidationError)
+    await strict.connect()
+    try {
+      await strict.users.raw(async (session) => {
+        const payload = { name: 'Legacy', email: 'legacy@example.com' }
+        await session.store(payload, 'Users/legacy')
+        await session.saveChanges()
+      })
+      await strict.users.raw(async (session) => {
+        const entity = await session.load<Record<string, unknown>>('Users/legacy')
+        if (!entity) throw new Error('legacy document was not created')
+        entity.email = 'invalid'
+        await session.saveChanges()
+      })
+      await expect(strict.users.findById('Users/legacy')).rejects.toBeInstanceOf(ValidationError)
+    } finally {
+      await strict.dispose()
+    }
   })
 
   it('rejects CRUD before connect', async () => {
-    const disconnected = defineCollection({ name: 'Disconnected', schema: userSchema })
-    await expect(disconnected.findMany()).rejects.toMatchObject({ code: 'not_connected' })
+    const pending = createDatabase({
+      urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8099'],
+      database: testDatabase.name,
+      collections: { disconnected: defineCollection({ name: 'Disconnected', schema: userSchema }) },
+    })
+    await expect(pending.disconnected.findMany()).rejects.toMatchObject({ code: 'not_connected' })
   })
 })

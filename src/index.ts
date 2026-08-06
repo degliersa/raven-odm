@@ -10,7 +10,13 @@ export type {
   SessionOption,
 } from './collection'
 export { Collection, defineCollection } from './collection'
-export type { DatabaseOptions } from './database'
+export type {
+  BindableCollection,
+  CollectionMap,
+  DatabaseOptions,
+  RavenDatabase,
+  ReservedCollectionKey,
+} from './database'
 export { createDatabase, Database } from './database'
 export type { RavenOdmErrorCode, RavenOdmErrorContext } from './errors'
 export {
