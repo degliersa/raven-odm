@@ -81,11 +81,22 @@ export interface OdmSession {
   dispose(): void
 }
 
+/**
+ * Runs `fn` under the Unit of Work policy owned by the database: a caller-provided
+ * session is reused as-is, otherwise a session is opened, saved on success and always
+ * disposed. `owned` tells the callback whether the session belongs to the library, so
+ * work that must read post-flush state (server identities) can flush early.
+ */
+export type RunInSession = <T>(
+  given: OdmSession | undefined,
+  fn: (session: OdmSession, owned: boolean) => Promise<T>,
+) => Promise<T>
+
 /** Set by createDatabase(); a collection is inert until then. */
 export interface CollectionBinding {
   readonly database: string
   readonly descriptor: CollectionDescriptor
-  openSession(): OdmSession
+  runInSession: RunInSession
   generateDocumentId(document: object): Promise<string>
 }
 
@@ -175,19 +186,12 @@ export class Collection<S extends DocumentSchema> {
     return { body: rest, id: String(id) }
   }
 
+  /** Session ownership is the database's policy; the collection only supplies the work. */
   async #withSession<T>(
     given: OdmSession | undefined,
     fn: (s: OdmSession) => Promise<T>,
   ): Promise<T> {
-    if (given) return fn(given)
-    const session = this.#bound().openSession()
-    try {
-      const result = await fn(session)
-      await session.saveChanges()
-      return result
-    } finally {
-      session.dispose()
-    }
+    return this.#bound().runInSession(given, (s) => fn(s))
   }
 
   async create(data: StandardSchemaV1.InferInput<S>, opts: SessionOption = {}): Promise<Doc<S>> {
@@ -227,25 +231,19 @@ export class Collection<S extends DocumentSchema> {
       id = `${this.name}/` // RavenDB identity prefix -> Users/1-A
     }
 
-    // The identity-prefix id only exists after the flush, so read it back from the
-    // session instead of trusting the value passed in.
-    const run = async (s: OdmSession, flush: boolean): Promise<Doc<S>> => {
+    // The identity-prefix id only exists after the flush, so an owned session is saved
+    // here rather than on the way out, and the id is read back from the session instead
+    // of trusting the value passed in. The trailing save done by the ownership policy
+    // then has nothing left to send.
+    return binding.runInSession(opts.session, async (s, owned) => {
       try {
         await s.raw.store(payload, id, binding.descriptor as never)
-        if (flush) await s.saveChanges()
+        if (owned) await s.saveChanges()
       } catch (err) {
         throw normalizeRavenError(err, { collection: this.name, documentId: id })
       }
       return { ...value, id: s.raw.advanced.getDocumentId(payload) ?? id } as Doc<S>
-    }
-
-    if (opts.session) return run(opts.session, false)
-    const session = this.#bound().openSession()
-    try {
-      return await run(session, true)
-    } finally {
-      session.dispose()
-    }
+    })
   }
 
   async findById(id: string, opts: SessionOption = {}): Promise<Doc<S> | null> {
