@@ -136,4 +136,22 @@ describe('ID generators', () => {
       name: 'Custom',
     })
   })
+
+  it('rejects a collection that configures both an idGenerator and an idStrategy', () => {
+    let thrown: unknown
+    try {
+      defineCollection({
+        name: 'AmbiguousUsers',
+        schema: userSchema,
+        idStrategy: 'hilo',
+        idGenerator: () => 'ambiguous/1',
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toMatchObject({
+      code: 'invalid_configuration',
+      collection: 'AmbiguousUsers',
+    })
+  })
 })

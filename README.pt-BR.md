@@ -181,7 +181,7 @@ O exemplo com Zod usa a API de nível superior `z.email()` do Zod 4. O Zod 3.24 
 ## IDs
 
 A estratégia padrão `idStrategy: 'uuid'` cria intencionalmente um ID conhecido no lado do cliente no formato `<collection>/<uuid>`. Isso mantém o ID do documento disponível antes de `saveChanges()` e funciona ao criar documentos em uma sessão externa. HiLo continua disponível como uma opção explícita quando são preferidos intervalos gerenciados pelo RavenDB.
-Use `idGenerator` para IDs definidos pela aplicação. Ele recebe o documento validado, o nome da coleção e o nome do banco de dados; seu resultado tem precedência sobre `idStrategy`:
+Use `idGenerator` para IDs definidos pela aplicação. Ele recebe o documento validado, o nome da coleção e o nome do banco de dados. `idGenerator` e `idStrategy` são mutuamente exclusivos: uma coleção que define os dois é rejeitada com `invalid_configuration`, de modo que a origem do ID fica sempre visível na definição.
 
 ```ts
 const db = createDatabase({
@@ -202,6 +202,22 @@ Use `idStrategy: 'hilo'` para o gerador HiLo do lado do cliente do RavenDB. O cl
 Use `idStrategy: 'server'` para solicitar identidades do RavenDB, como `Orders/1-A`. O RavenDB atribui esse ID durante `saveChanges()`, portanto essa estratégia não pode ser usada com `create(data, { session })`. Use um gerador personalizado ou a estratégia UUID padrão para sessões externas.
 
 Consulte [`examples/id-strategies.ts`](examples/id-strategies.ts) para ver os quatro caminhos de geração em um único exemplo executável.
+
+## Consultas e obsolescência de índice
+
+O `findMany()` sem `where` ou `orderBy` lê a coleção diretamente e sempre observa gravações anteriores.
+
+Ao adicionar `where` ou `orderBy`, a consulta passa a ser respondida por um índice automático do RavenDB, e índices automáticos são atualizados de forma assíncrona. Por padrão o ODM não espera por eles — o mesmo comportamento do cliente oficial —, então uma consulta pode não enxergar um documento gravado instantes antes. Opte pela espera por chamada quando a leitura precisa observar a gravação anterior:
+
+```ts
+// espera com o timeout padrão do RavenDB
+await Users.findMany({ where: { active: true }, waitForNonStaleResults: true })
+
+// ou limite a espera explicitamente, em milissegundos
+await Users.findMany({ orderBy: { field: 'name' }, waitForNonStaleResults: 5_000 })
+```
+
+Esgotar a espera lança `RavenOdmError` com `code === 'query_timeout'`. Esperar custa latência, então prefira usar isso em fluxos de leitura após gravação, e não como padrão global.
 
 ## Sessões e Unit of Work
 
@@ -243,6 +259,7 @@ As falhas do RavenDB são normalizadas em subclasses de `RavenOdmError`. Inspeci
 | `not_connected` | Um banco de dados ou coleção foi usado antes de `connect()`. |
 | `already_bound` | Uma coleção foi vinculada a mais de um banco de dados. |
 | `invalid_configuration` | A configuração da coleção ou do banco de dados é inválida. |
+| `query_timeout` | O `findMany` esperou por um índice não obsoleto e a espera se esgotou. |
 | `raven_error` | Uma falha não classificada do cliente/servidor RavenDB. |
 
 `findById` retorna `null` para um documento inexistente; ele não lança `document_not_found`.
@@ -259,6 +276,20 @@ await db.users.raw(async (session) => {
 
 const nativeStore = db.store
 ```
+
+## Ciclo de vida da conexão
+
+O `connect()` vincula ao banco todas as coleções configuradas; o `dispose()` as libera. Um banco descartado pode ser conectado de novo, e suas coleções continuam funcionando na nova conexão:
+
+```ts
+await db.connect()
+await db.dispose()
+await db.connect() // as mesmas coleções, utilizáveis de novo
+```
+
+Entre as duas chamadas a coleção não tem banco, então usá-la lança `not_connected`. Um `connect()` que falha libera o que já tinha vinculado, de modo que um erro de configuração pode ser corrigido e tentado outra vez.
+
+Uma coleção pertence a um banco conectado por vez. Passar a mesma coleção para um segundo banco enquanto o primeiro ainda está conectado lança `already_bound`; descartar o primeiro a libera para o segundo.
 
 ## Ciclo de vida dos documentos
 

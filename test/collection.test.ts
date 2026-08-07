@@ -108,6 +108,27 @@ describe('Collection CRUD', () => {
     expect((await db.users.findMany()).length).toBe(3)
   })
 
+  it('sees writes made after the auto-index exists when waiting for non-stale results', async () => {
+    // Create the auto-index first. RavenDB waits for an index it creates for the
+    // query at hand, so a query that both creates and uses the index would prove
+    // nothing about staleness.
+    expect(await db.users.findMany({ where: { name: 'nobody' } })).toEqual([])
+
+    await db.users.create({ name: 'Fresh', email: 'fresh@example.com' })
+    const waited = await db.users.findMany({
+      where: { name: 'Fresh' },
+      waitForNonStaleResults: true,
+    })
+    expect(waited.map(({ name }) => name)).toEqual(['Fresh'])
+
+    await db.users.create({ name: 'Fresher', email: 'fresher@example.com' })
+    const withTimeout = await db.users.findMany({
+      orderBy: { field: 'name' },
+      waitForNonStaleResults: 15_000,
+    })
+    expect(withTimeout.map(({ name }) => name)).toEqual(['Fresh', 'Fresher'])
+  })
+
   it('deletes documents', async () => {
     const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' })
     await db.users.delete(user.id)

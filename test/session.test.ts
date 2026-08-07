@@ -50,6 +50,39 @@ describe('sessions and unit of work', () => {
     expect(await db.users.findById(user.id)).toBeNull()
   })
 
+  it('commits work done in the session the library opens', async () => {
+    await db.users.raw(async (session) => {
+      await session.store({ name: 'Maria', email: 'maria@example.com' }, 'Users/owned')
+    })
+    expect(await db.users.findById('Users/owned')).toMatchObject({ name: 'Maria' })
+  })
+
+  it('commits nothing when work inside a library-owned session fails', async () => {
+    await expect(
+      db.users.raw(async (session) => {
+        await session.store({ name: 'Maria', email: 'maria@example.com' }, 'Users/failed')
+        throw new Error('work failed')
+      }),
+    ).rejects.toThrow('work failed')
+    expect(await db.users.findById('Users/failed')).toBeNull()
+  })
+
+  it('commits nothing when a transaction callback fails', async () => {
+    let createdId = ''
+    await expect(
+      db.transaction(async (session) => {
+        const user = await db.users.create(
+          { name: 'Maria', email: 'maria@example.com' },
+          { session },
+        )
+        createdId = user.id
+        throw new Error('transaction failed')
+      }),
+    ).rejects.toThrow('transaction failed')
+    expect(createdId).not.toBe('')
+    expect(await db.users.findById(createdId)).toBeNull()
+  })
+
   it('rejects server identities inside an external session', async () => {
     const serverDb = createDatabase({
       urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8099'],

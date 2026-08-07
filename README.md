@@ -183,7 +183,7 @@ The Zod example uses Zod 4's top-level `z.email()` API. Zod 3.24 remains support
 ## IDs
 
 The default `idStrategy: 'uuid'` intentionally creates a known client-side ID in the form `<collection>/<uuid>`. This keeps the document ID available before `saveChanges()` and works when creating documents in an external session. HiLo remains available as an explicit opt-in when RavenDB-managed ranges are preferred.
-Use `idGenerator` for application-defined IDs. It receives the validated document, collection name, and database name; its result takes precedence over `idStrategy`:
+Use `idGenerator` for application-defined IDs. It receives the validated document, collection name, and database name. `idGenerator` and `idStrategy` are mutually exclusive: a collection that sets both is rejected with `invalid_configuration`, so the ID source is always visible in the definition.
 
 ```ts
 const db = createDatabase({
@@ -204,6 +204,22 @@ Use `idStrategy: 'hilo'` for RavenDB's client-side HiLo generator. The client re
 Use `idStrategy: 'server'` to request RavenDB identities such as `Orders/1-A`. RavenDB assigns that ID during `saveChanges()`, so this strategy cannot be used with `create(data, { session })`. Use a custom generator or the default UUID strategy for external sessions.
 
 See [`examples/id-strategies.ts`](examples/id-strategies.ts) for all four generator paths in one runnable example.
+
+## Queries and index staleness
+
+`findMany()` without `where` or `orderBy` reads the collection directly and always observes earlier writes.
+
+Adding `where` or `orderBy` sends the query to a RavenDB auto-index instead, and auto-indexes are updated asynchronously. By default the ODM does not wait for them — the same behavior as the official client — so a query can miss a document written moments earlier. Opt in per call when a read must observe a preceding write:
+
+```ts
+// wait with RavenDB's default timeout
+await Users.findMany({ where: { active: true }, waitForNonStaleResults: true })
+
+// or bound the wait explicitly, in milliseconds
+await Users.findMany({ orderBy: { field: 'name' }, waitForNonStaleResults: 5_000 })
+```
+
+Exhausting the wait raises `RavenOdmError` with `code === 'query_timeout'`. Waiting costs latency and hides nothing else, so prefer it for read-after-write paths rather than as a global default.
 
 ## Sessions and Unit of Work
 
@@ -245,6 +261,7 @@ RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`,
 | `not_connected` | A database or collection was used before `connect()`. |
 | `already_bound` | A collection was attached to more than one database. |
 | `invalid_configuration` | Collection or database configuration is invalid. |
+| `query_timeout` | `findMany` waited for a non-stale index and the wait ran out. |
 | `raven_error` | An unclassified RavenDB client/server failure. |
 
 `findById` returns `null` for a missing document; it does not throw `document_not_found`.
@@ -261,6 +278,20 @@ await db.users.raw(async (session) => {
 
 const nativeStore = db.store
 ```
+
+## Connection lifecycle
+
+`connect()` attaches every configured collection to the database; `dispose()` releases them again. A disposed database can be connected again, and its collections keep working against the new connection:
+
+```ts
+await db.connect()
+await db.dispose()
+await db.connect() // same collections, usable again
+```
+
+Between the two calls, a collection has no database, so using it raises `not_connected`. A failed `connect()` releases whatever it had already attached, so a configuration mistake can be corrected and retried.
+
+A collection belongs to one connected database at a time. Passing the same collection to a second database while the first is still connected raises `already_bound`; disposing the first releases it for the second.
 
 ## Document lifecycle
 

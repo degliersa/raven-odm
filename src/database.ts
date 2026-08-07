@@ -12,6 +12,7 @@ export interface BindableCollection {
   readonly name: string
   readonly descriptor: CollectionDescriptor
   bind(binding: CollectionBinding): void
+  unbind(): void
 }
 
 /** Collections keyed by the name you will reach them under: `db.users`. */
@@ -57,6 +58,7 @@ export interface DatabaseOptions<TCollections extends CollectionMap = Collection
 /** A connected database, with its collections reachable as properties. */
 export type RavenDatabase<TCollections extends CollectionMap> = Database<TCollections> &
   TCollections
+
 class Session implements OdmSession {
   constructor(readonly raw: IDocumentSession) {}
 
@@ -80,6 +82,8 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
   #options: DatabaseOptions<TCollections>
   /** descriptor -> exact collection name; read live by the findCollectionName override. */
   #registry = new Map<CollectionDescriptor, string>()
+  /** Exactly the collections this database bound, so dispose() releases no others. */
+  #registered = new Set<BindableCollection>()
 
   constructor(options: DatabaseOptions<TCollections>) {
     if (!options.database) {
@@ -138,14 +142,16 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
     store.conventions.findCollectionName = (descriptor) =>
       this.#registry.get(descriptor as CollectionDescriptor) ?? fallback(descriptor)
 
-    for (const collection of Object.values(this.#options.collections)) {
-      this.#register(store, collection)
-    }
-
     try {
+      for (const collection of Object.values(this.#options.collections)) {
+        this.#register(store, collection)
+      }
       store.initialize()
     } catch (err) {
+      // Leave nothing half-registered: a failed connect must be recoverable by
+      // fixing the configuration and calling connect() again.
       store.dispose()
+      this.#release()
       throw normalizeRavenError(err, {})
     }
     this.#store = store
@@ -165,7 +171,7 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
     collection.bind({
       database: this.database,
       descriptor: collection.descriptor,
-      openSession: () => this.openSession(),
+      runInSession: (given, fn) => this.#runInSession(given, fn),
       // The descriptor, not the document: RavenDB resolves the collection from
       // whatever it is handed, and the descriptor answers isType() for itself.
       // Passing the payload would require marking it so RavenDB could recognise
@@ -173,6 +179,9 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
       generateDocumentId: () =>
         store.conventions.generateDocumentId(this.database, collection.descriptor),
     })
+    // Recorded only once the bind succeeds. A collection already bound elsewhere
+    // belongs to that database, and releasing this one must not detach it.
+    this.#registered.add(collection)
   }
 
   openSession(): OdmSession {
@@ -182,9 +191,21 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
   }
 
   async transaction<T>(fn: (session: OdmSession) => Promise<T>): Promise<T> {
+    return this.#runInSession(undefined, (session) => fn(session))
+  }
+
+  /**
+   * The single Unit of Work policy: a caller-owned session is reused untouched, a
+   * library-owned session is saved after successful work and disposed either way.
+   */
+  async #runInSession<T>(
+    given: OdmSession | undefined,
+    fn: (session: OdmSession, owned: boolean) => Promise<T>,
+  ): Promise<T> {
+    if (given) return fn(given, false)
     const session = this.openSession()
     try {
-      const result = await fn(session)
+      const result = await fn(session, true)
       await session.saveChanges()
       return result
     } finally {
@@ -195,6 +216,18 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
   async dispose(): Promise<void> {
     this.#store?.dispose()
     this.#store = undefined
+    this.#release()
+  }
+
+  /**
+   * Registration is per connection, not per instance: without this, connect()
+   * would find its own collections already registered and report them as
+   * duplicates supplied by the caller.
+   */
+  #release(): void {
+    for (const collection of this.#registered) collection.unbind()
+    this.#registered.clear()
+    this.#registry.clear()
   }
 }
 
