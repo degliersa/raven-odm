@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { IDocumentSession } from 'ravendb'
-import { normalizeRavenError, RavenOdmError } from './errors'
+import { normalizeQueryError, normalizeRavenError, RavenOdmError } from './errors'
 import { validate } from './validate'
 
 const METADATA_KEY = '@metadata'
@@ -32,8 +32,11 @@ export interface CollectionOptions<S extends DocumentSchema> {
    *   an external session.
    * - 'server': RavenDB identity `<name>/1-A`; needs the save to resolve, so it is
    *   rejected when a `session` is supplied.
+   *
+   * Mutually exclusive with `idGenerator`.
    */
   readonly idStrategy?: 'uuid' | 'hilo' | 'server' | undefined
+  /** Supplies the id itself. Mutually exclusive with `idStrategy`. */
   readonly idGenerator?: IdGenerator<S> | undefined
   /** Validate documents coming back from the server. Default: false. */
   readonly validateOnRead?: boolean | undefined
@@ -57,6 +60,19 @@ export interface FindManyOptions<S extends DocumentSchema> extends SessionOption
     | undefined
   readonly skip?: number | undefined
   readonly take?: number | undefined
+  /**
+   * Wait for the index answering this query to catch up with earlier writes.
+   *
+   * A `where` or `orderBy` query is answered by a RavenDB auto-index, which is
+   * updated asynchronously, so by default it may not yet observe a document
+   * written moments earlier. `true` waits with the server's default timeout, a
+   * number waits that many milliseconds, and exhausting either raises
+   * `query_timeout`. Default: false, matching RavenDB.
+   *
+   * An unfiltered, unordered `findMany()` reads the collection directly and
+   * always observes prior writes, so this option is unnecessary there.
+   */
+  readonly waitForNonStaleResults?: boolean | number | undefined
 }
 
 export interface OdmSession {
@@ -65,11 +81,22 @@ export interface OdmSession {
   dispose(): void
 }
 
+/**
+ * Runs `fn` under the Unit of Work policy owned by the database: a caller-provided
+ * session is reused as-is, otherwise a session is opened, saved on success and always
+ * disposed. `owned` tells the callback whether the session belongs to the library, so
+ * work that must read post-flush state (server identities) can flush early.
+ */
+export type RunInSession = <T>(
+  given: OdmSession | undefined,
+  fn: (session: OdmSession, owned: boolean) => Promise<T>,
+) => Promise<T>
+
 /** Set by createDatabase(); a collection is inert until then. */
 export interface CollectionBinding {
   readonly database: string
   readonly descriptor: CollectionDescriptor
-  openSession(): OdmSession
+  runInSession: RunInSession
   /** Reserves the next HiLo id for this collection. Takes no document: the id
    * depends on the collection, never on what is being stored. */
   generateDocumentId(): Promise<string>
@@ -90,6 +117,17 @@ export class Collection<S extends DocumentSchema> {
       throw new RavenOdmError(
         'invalid_configuration',
         'defineCollection requires a non-empty "name"',
+      )
+    }
+    // Both would resolve the same id, and only one of them can win. Refusing the
+    // pair keeps the winner from being a fact you can only learn by reading create().
+    if (options.idGenerator && options.idStrategy) {
+      throw new RavenOdmError(
+        'invalid_configuration',
+        `Collection "${options.name}" sets both "idGenerator" and "idStrategy". ` +
+          'They are mutually exclusive: keep "idGenerator" to supply ids yourself, or ' +
+          'keep "idStrategy" to let raven-odm or RavenDB assign them.',
+        { collection: options.name },
       )
     }
     this.name = options.name
@@ -123,6 +161,17 @@ export class Collection<S extends DocumentSchema> {
     this.#binding = binding
   }
 
+  /**
+   * Released by `Database.dispose()`, and only for the database that bound it,
+   * so a disposed database can be connected again and a collection is never
+   * detached from a database that is still live.
+   *
+   * @internal
+   */
+  unbind(): void {
+    this.#binding = undefined
+  }
+
   #bound(): CollectionBinding {
     if (!this.#binding) {
       throw new RavenOdmError(
@@ -143,19 +192,12 @@ export class Collection<S extends DocumentSchema> {
     return { body: rest, id: String(id) }
   }
 
+  /** Session ownership is the database's policy; the collection only supplies the work. */
   async #withSession<T>(
     given: OdmSession | undefined,
     fn: (s: OdmSession) => Promise<T>,
   ): Promise<T> {
-    if (given) return fn(given)
-    const session = this.#bound().openSession()
-    try {
-      const result = await fn(session)
-      await session.saveChanges()
-      return result
-    } finally {
-      session.dispose()
-    }
+    return this.#bound().runInSession(given, (s) => fn(s))
   }
 
   async create(data: StandardSchemaV1.InferInput<S>, opts: SessionOption = {}): Promise<Doc<S>> {
@@ -194,25 +236,19 @@ export class Collection<S extends DocumentSchema> {
       id = `${this.name}/` // RavenDB identity prefix -> Users/1-A
     }
 
-    // The identity-prefix id only exists after the flush, so read it back from the
-    // session instead of trusting the value passed in.
-    const run = async (s: OdmSession, flush: boolean): Promise<Doc<S>> => {
+    // The identity-prefix id only exists after the flush, so an owned session is saved
+    // here rather than on the way out, and the id is read back from the session instead
+    // of trusting the value passed in. The trailing save done by the ownership policy
+    // then has nothing left to send.
+    return binding.runInSession(opts.session, async (s, owned) => {
       try {
         await s.raw.store(payload, id, binding.descriptor as never)
-        if (flush) await s.saveChanges()
+        if (owned) await s.saveChanges()
       } catch (err) {
         throw normalizeRavenError(err, { collection: this.name, documentId: id })
       }
       return { ...value, id: s.raw.advanced.getDocumentId(payload) ?? id } as Doc<S>
-    }
-
-    if (opts.session) return run(opts.session, false)
-    const session = this.#bound().openSession()
-    try {
-      return await run(session, true)
-    } finally {
-      session.dispose()
-    }
+    })
   }
 
   async findById(id: string, opts: SessionOption = {}): Promise<Doc<S> | null> {
@@ -239,6 +275,9 @@ export class Collection<S extends DocumentSchema> {
         collection: this.name,
         documentType: binding.descriptor as never,
       })
+      const wait = opts.waitForNonStaleResults
+      if (wait === true) q = q.waitForNonStaleResults()
+      else if (typeof wait === 'number') q = q.waitForNonStaleResults(wait)
       const where = opts.where as Record<string, unknown> | undefined
       if (where) {
         let first = true
@@ -255,7 +294,12 @@ export class Collection<S extends DocumentSchema> {
       }
       if (opts.skip !== undefined) q = q.skip(opts.skip)
       if (opts.take !== undefined) q = q.take(opts.take)
-      const rows = await q.all()
+      let rows: Record<string, unknown>[]
+      try {
+        rows = await q.all()
+      } catch (err) {
+        throw normalizeQueryError(err, { collection: this.name })
+      }
       return Promise.all(rows.map((r) => this.#hydrate(r)))
     })
   }
