@@ -128,6 +128,25 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
     return this.#store
   }
 
+  /**
+   * Attaches every configured collection and initializes the RavenDB client.
+   * Idempotent: calling it again while connected returns immediately.
+   *
+   * It does **not** reach the server. The client connects on the first real
+   * operation, so a wrong URL or an unreachable host surfaces at your first
+   * `create()` or `findMany()`, not here.
+   *
+   * @example
+   * ```ts
+   * await db.connect()
+   * process.on('SIGTERM', () => void db.dispose())
+   * ```
+   *
+   * @throws `RavenOdmError` with `invalid_configuration` — two collections share
+   * a RavenDB name.
+   * @throws `RavenOdmError` with `already_bound` — a collection is still attached
+   * to another connected database.
+   */
   async connect(): Promise<this> {
     if (this.#store) return this
     const store = new DocumentStore(
@@ -184,12 +203,48 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
     this.#registered.add(collection)
   }
 
+  /**
+   * Opens a session you own. Nothing is written until you call `saveChanges()`,
+   * and you are responsible for `dispose()` — disposing first discards the
+   * pending work.
+   *
+   * Prefer {@link transaction} unless you need the session to outlive one block.
+   *
+   * @example
+   * ```ts
+   * const session = db.openSession()
+   * try {
+   *   await db.users.create({ name: 'Maria', email: 'maria@example.com' }, { session })
+   *   await session.saveChanges()
+   * } finally {
+   *   session.dispose()
+   * }
+   * ```
+   */
   openSession(): OdmSession {
     const raw = this.store.openSession()
     if (this.#optimistic) raw.advanced.useOptimisticConcurrency = true
     return new Session(raw)
   }
 
+  /**
+   * Runs `fn` in one Unit of Work: a session is opened, your work is committed
+   * once at the end, and the session is disposed either way.
+   *
+   * Writes across several collections land together — pass the session to each
+   * call. If `fn` throws, nothing is committed.
+   *
+   * @example
+   * ```ts
+   * await db.transaction(async (session) => {
+   *   const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' }, { session })
+   *   await db.orders.create({ userId: user.id, status: 'pending', total: 42 }, { session })
+   * })
+   * ```
+   *
+   * @throws `ConcurrencyConflictError` — a stale write, when the database was
+   * created with `optimisticConcurrency: true`.
+   */
   async transaction<T>(fn: (session: OdmSession) => Promise<T>): Promise<T> {
     return this.#runInSession(undefined, (session) => fn(session))
   }
@@ -213,6 +268,22 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
     }
   }
 
+  /**
+   * Closes the client and releases the collections this database attached.
+   *
+   * Call it on shutdown: the client holds sockets and timers, so a process that
+   * finishes without disposing stays alive. Do **not** call it per request in a
+   * serverless handler — that discards the cluster topology and pays the
+   * handshake again on the next invocation.
+   *
+   * The database can be connected again afterwards, and its collections keep
+   * working against the new connection.
+   *
+   * @example
+   * ```ts
+   * process.on('SIGTERM', () => void db.dispose())
+   * ```
+   */
   async dispose(): Promise<void> {
     this.#store?.dispose()
     this.#store = undefined
@@ -231,6 +302,33 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
   }
 }
 
+/**
+ * Creates a database over a named set of collections, typed so each key becomes
+ * a property: `db.users`, `db.orders`.
+ *
+ * The key names the accessor only — the RavenDB collection stays exactly the
+ * `name` given to `defineCollection`, never pluralized or rewritten. Nothing
+ * connects until you call {@link Database.connect}.
+ *
+ * @example
+ * ```ts
+ * const db = createDatabase({
+ *   urls: [process.env.RAVENDB_URL as string],
+ *   database: 'app',
+ *   collections: {
+ *     users: defineCollection({ name: 'Users', schema: userSchema }),
+ *   },
+ *   optimisticConcurrency: true, // optional: stale writes raise instead of winning
+ * })
+ *
+ * await db.connect()
+ * const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' })
+ * ```
+ *
+ * @throws `RavenOdmError` with `invalid_configuration` — no database name, no
+ * URL, or a collection key that would shadow a `Database` member such as
+ * `connect` or `transaction`.
+ */
 export function createDatabase<TCollections extends CollectionMap>(
   options: DatabaseOptions<TCollections>,
 ): RavenDatabase<TCollections> {

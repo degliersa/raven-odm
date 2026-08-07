@@ -201,6 +201,31 @@ export class Collection<S extends DocumentSchema> {
     return this.#bound().runInSession(given, (s) => fn(s))
   }
 
+  /**
+   * Validates `data` against the schema and stores it, returning the document
+   * with its `id`.
+   *
+   * Nothing is written if validation fails: the thrown `ValidationError` carries
+   * the Standard Schema issues. Without a session the write is committed before
+   * this resolves; with one it is committed by your `saveChanges()`.
+   *
+   * @example
+   * ```ts
+   * const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' })
+   * user.id // 'Users/6f9…'
+   *
+   * // inside a transaction, committed once at the end
+   * await db.transaction(async (session) => {
+   *   await db.users.create({ name: 'Maria', email: 'maria@example.com' }, { session })
+   *   await db.orders.create({ status: 'pending', total: 42 }, { session })
+   * })
+   * ```
+   *
+   * @throws `ValidationError` — the document does not satisfy the schema.
+   * @throws `RavenOdmError` with `invalid_configuration` — `idStrategy: 'server'`
+   * cannot be used with an external session, because the server assigns that id
+   * during the save.
+   */
   async create(data: StandardSchemaV1.InferInput<S>, opts: SessionOption = {}): Promise<Doc<S>> {
     const binding = this.#bound()
     const value = await validate(this.schema, data, { collection: this.name })
@@ -230,6 +255,20 @@ export class Collection<S extends DocumentSchema> {
     })
   }
 
+  /**
+   * Loads one document by id, or `null` when it does not exist.
+   *
+   * Reading by id is never stale — unlike `findMany` with a filter, it does not
+   * go through an index. The returned document is a flat validated copy, not a
+   * tracked entity: mutating it schedules no write.
+   *
+   * @example
+   * ```ts
+   * const user = await db.users.findById('Users/1-A')
+   * if (!user) return notFound()
+   * user.name // typed from the schema
+   * ```
+   */
   async findById(id: string, opts: SessionOption = {}): Promise<Doc<S> | null> {
     const binding = this.#bound()
     return this.#withSession(opts.session, async (s) => {
@@ -247,6 +286,32 @@ export class Collection<S extends DocumentSchema> {
     return { ...value, id } as Doc<S>
   }
 
+  /**
+   * Reads documents from the collection. Entries in `where` are combined with
+   * AND and compared for equality; anything richer belongs in {@link raw}.
+   *
+   * Without `take` this returns **every** matching document, which is a memory
+   * hazard on a large collection. With `where` or `orderBy` the query is answered
+   * by an auto-index, which updates asynchronously — pass `waitForNonStaleResults`
+   * when the read must observe a write that just happened.
+   *
+   * @example
+   * ```ts
+   * const page = await db.users.findMany({
+   *   where: { status: 'active' },
+   *   orderBy: { field: 'name' },
+   *   skip: 20,
+   *   take: 10,
+   * })
+   *
+   * // read-after-write
+   * await db.users.create({ name: 'Maria', email: 'maria@example.com' })
+   * await db.users.findMany({ where: { name: 'Maria' }, waitForNonStaleResults: true })
+   * ```
+   *
+   * @throws `RavenOdmError` with `query_timeout` — the wait for a non-stale index
+   * ran out.
+   */
   async findMany(opts: FindManyOptions<S> = {}): Promise<Doc<S>[]> {
     const binding = this.#bound()
     return this.#withSession(opts.session, async (s) => {
@@ -283,6 +348,27 @@ export class Collection<S extends DocumentSchema> {
     })
   }
 
+  /**
+   * Merges `patch` into the stored document and writes it back.
+   *
+   * This is a read-modify-write: the document is loaded, merged, and re-validated
+   * **as a whole**, so what is stored always satisfies the schema — a patch that
+   * makes the merged document invalid is rejected and nothing is written. Fields
+   * absent from the merged result are removed from the document.
+   *
+   * Being read-modify-write also makes it racy for a value derived from its own
+   * previous value, such as a counter; enable `optimisticConcurrency` on the
+   * database if a lost update matters.
+   *
+   * @example
+   * ```ts
+   * const updated = await db.users.update('Users/1-A', { name: 'Maria Silva' })
+   * updated.email // untouched fields are preserved
+   * ```
+   *
+   * @throws `RavenOdmError` with `document_not_found` — no document has that id.
+   * @throws `ValidationError` — the merged document does not satisfy the schema.
+   */
   async update(
     id: string,
     patch: Partial<StandardSchemaV1.InferInput<S>>,
@@ -315,6 +401,17 @@ export class Collection<S extends DocumentSchema> {
     })
   }
 
+  /**
+   * Deletes the document with this id.
+   *
+   * Deleting an id that does not exist is not an error — RavenDB treats the
+   * delete as satisfied either way.
+   *
+   * @example
+   * ```ts
+   * await db.users.delete('Users/1-A')
+   * ```
+   */
   async delete(id: string, opts: SessionOption = {}): Promise<void> {
     this.#bound()
     await this.#withSession(opts.session, async (s) => {
@@ -326,7 +423,27 @@ export class Collection<S extends DocumentSchema> {
     })
   }
 
-  /** Escape hatch: full native session, nothing hidden. */
+  /**
+   * Escape hatch: runs your callback with the native RavenDB `IDocumentSession`,
+   * nothing hidden and nothing wrapped.
+   *
+   * Use it for anything this ODM deliberately does not model — richer queries,
+   * patches, attachments, counters. Entities you load here are raw RavenDB
+   * documents: no schema validation, no metadata stripping, no `id` attached.
+   *
+   * The session follows the usual policy: one opened here is saved and disposed
+   * for you, and a session you pass in is left alone.
+   *
+   * @example
+   * ```ts
+   * const recent = await db.orders.raw(async (session) =>
+   *   session
+   *     .query({ collection: 'Orders' })
+   *     .whereGreaterThan('total', 100)
+   *     .all(),
+   * )
+   * ```
+   */
   async raw<T>(
     fn: (session: IDocumentSession) => Promise<T>,
     opts: SessionOption = {},
@@ -335,6 +452,29 @@ export class Collection<S extends DocumentSchema> {
   }
 }
 
+/**
+ * Declares a collection: an exact RavenDB collection name plus the schema that
+ * validates its documents and gives them their TypeScript type.
+ *
+ * The result is inert until you pass it to `createDatabase` and connect — using
+ * it before that raises `not_connected`. Reach it through the database
+ * afterwards, as `db.<key>`.
+ *
+ * @example
+ * ```ts
+ * const users = defineCollection({
+ *   name: 'Users',                       // the RavenDB collection, verbatim
+ *   schema: z.object({ name: z.string(), email: z.email() }),
+ * })
+ *
+ * const db = createDatabase({ urls, database: 'app', collections: { users } })
+ * await db.connect()
+ * await db.users.create({ name: 'Maria', email: 'maria@example.com' })
+ * ```
+ *
+ * @throws `RavenOdmError` with `invalid_configuration` — the name is empty, or
+ * both `idGenerator` and `idStrategy` were given.
+ */
 export function defineCollection<S extends DocumentSchema>(
   options: CollectionOptions<S>,
 ): Collection<S> {
