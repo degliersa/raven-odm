@@ -97,7 +97,9 @@ export interface CollectionBinding {
   readonly database: string
   readonly descriptor: CollectionDescriptor
   runInSession: RunInSession
-  generateDocumentId(document: object): Promise<string>
+  /** Reserves the next HiLo id for this collection. Takes no document: the id
+   * depends on the collection, never on what is being stored. */
+  generateDocumentId(): Promise<string>
 }
 
 export class Collection<S extends DocumentSchema> {
@@ -109,7 +111,6 @@ export class Collection<S extends DocumentSchema> {
   #idStrategy: 'uuid' | 'hilo' | 'server'
   #validateOnRead: boolean
   #binding: CollectionBinding | undefined
-  #hiloMarker = Symbol('raven-odm-hilo')
 
   constructor(options: CollectionOptions<S>) {
     if (!options.name) {
@@ -134,11 +135,16 @@ export class Collection<S extends DocumentSchema> {
     this.#idGenerator = options.idGenerator
     this.#idStrategy = options.idStrategy ?? 'uuid'
     this.#validateOnRead = options.validateOnRead ?? false
-    // The marker is only present on payloads being assigned a HiLo ID. This keeps
-    // normal object literals from being shape-sniffed into a collection.
+    // RavenDB calls isType() to recover a descriptor from a bare object, which
+    // this ODM needs in exactly one place: resolving the collection name while
+    // reserving a HiLo id. So the descriptor identifies *itself* and nothing
+    // else. Recognising documents instead would be wrong twice over: object
+    // literals would be shape-sniffed into a collection, and a `true` answer
+    // makes convertToEntity() return the raw document, skipping the step that
+    // attaches its id.
     this.descriptor = {
       name: options.name,
-      isType: (obj) => Reflect.get(obj, this.#hiloMarker) === true,
+      isType: (obj) => obj === this.descriptor,
       construct: (dto) => dto,
     }
   }
@@ -211,8 +217,7 @@ export class Collection<S extends DocumentSchema> {
       id = `${this.name}/${randomUUID()}`
     } else if (this.#idStrategy === 'hilo') {
       try {
-        Object.defineProperty(payload, this.#hiloMarker, { value: true })
-        id = await binding.generateDocumentId(payload)
+        id = await binding.generateDocumentId()
       } catch (err) {
         throw normalizeRavenError(err, { collection: this.name })
       }
