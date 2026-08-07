@@ -87,7 +87,9 @@ O projeto foi criado para aplicações que desejam:
 - limites explícitos de Unit of Work e concorrência otimista;
 - um escape hatch nativo do RavenDB sempre que o ODM não deve atrapalhar.
 
-O pacote é atualmente publicado pelo canal de pré-lançamento `alpha` do Changesets. A API pública é intencionalmente pequena enquanto a suíte de integração é executada contra um servidor RavenDB real.
+O pacote saiu do canal de pré-lançamento `alpha` e passa a ser publicado normalmente. A API pública é intencionalmente pequena, e todo comportamento que ela documenta é coberto por uma suíte de integração executada contra um servidor RavenDB real.
+
+As versões ainda são `0.x`: a superfície descrita aqui está estabelecida e testada, mas o semver ainda não a promete contra mudanças incompatíveis. Uma delas já é prevista — hoje uma collection pertence a um único database conectado por vez, e remover essa restrição aposentaria o código de erro `already_bound`.
 
 ## Instalação
 

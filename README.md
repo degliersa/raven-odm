@@ -89,7 +89,9 @@ The project is designed for applications that want:
 - explicit Unit of Work boundaries and optimistic concurrency;
 - a native RavenDB escape hatch whenever the ODM should not get in the way.
 
-The package is currently released from the Changesets `alpha` prerelease channel. The public API is intentionally small while the integration suite runs against a real RavenDB server.
+The package has left the `alpha` prerelease channel and is now released normally. The public API is intentionally small, and every behavior it documents is covered by an integration suite that runs against a real RavenDB server.
+
+Versions are still `0.x`: the surface described here is settled and tested, but semver does not yet promise it against breaking changes. One is already anticipated — a collection currently belongs to one connected database at a time, and lifting that would retire the `already_bound` error code.
 
 ## Installation
 
