@@ -215,13 +215,15 @@ Adding `where` or `orderBy` sends the query to a RavenDB auto-index instead, and
 
 ```ts
 // wait with RavenDB's default timeout
-await Users.findMany({ where: { active: true }, waitForNonStaleResults: true })
+await db.users.findMany({ where: { active: true }, waitForNonStaleResults: true })
 
 // or bound the wait explicitly, in milliseconds
-await Users.findMany({ orderBy: { field: 'name' }, waitForNonStaleResults: 5_000 })
+await db.users.findMany({ orderBy: { field: 'name' }, waitForNonStaleResults: 5_000 })
 ```
 
 Exhausting the wait raises `RavenOdmError` with `code === 'query_timeout'`. Waiting costs latency and hides nothing else, so prefer it for read-after-write paths rather than as a global default.
+
+`findMany()` without `take` returns every matching document. That is fine for a bounded collection and a memory hazard for a large one, so pass `take` when the result set can grow.
 
 ## Sessions and Unit of Work
 
@@ -294,6 +296,76 @@ await db.connect() // same collections, usable again
 Between the two calls, a collection has no database, so using it raises `not_connected`. A failed `connect()` releases whatever it had already attached, so a configuration mistake can be corrected and retried.
 
 A collection belongs to one connected database at a time. Passing the same collection to a second database while the first is still connected raises `already_bound`; disposing the first releases it for the second.
+
+Two things about these calls are worth knowing before they surprise you:
+
+- **`connect()` does not reach the server.** It attaches collections and initializes the client; the RavenDB client only opens a connection on the first real operation. A wrong URL, an unreachable host, or a missing certificate therefore fails at your first `create()` or `findMany()`, not at startup.
+- **`dispose()` is what lets the process exit.** The client holds sockets and timers, so a script that finishes its work without disposing keeps Node alive.
+
+## Deployment
+
+The connection is a per-process resource. Where you put `connect()` and `dispose()` depends on whether the process outlives a request.
+
+### Long-lived servers (Fastify, Nest, Express)
+
+Connect at startup and dispose on shutdown, so application code only ever calls collections:
+
+```ts
+const db = createDatabase({ urls, database, collections: { users } })
+
+await db.connect()
+process.on('SIGTERM', () => void db.dispose())
+```
+
+### Serverless (Next, Nuxt, Lambda)
+
+Serverless platforms reuse the execution context between invocations, so the database belongs at module scope and is connected once — **not per request, and never disposed per request**. Disposing throws away the cluster topology the client just discovered and pays the handshake again on the next invocation.
+
+```ts
+// lib/db.ts
+import { z } from 'zod'
+import { type Collection, createDatabase, defineCollection, type RavenDatabase } from '@degliersa/raven-odm'
+
+const userSchema = z.object({ name: z.string(), email: z.email() })
+
+export type AppDatabase = RavenDatabase<{ users: Collection<typeof userSchema> }>
+
+const createAppDatabase = (): AppDatabase =>
+  createDatabase({
+    urls: [process.env.RAVENDB_URL as string],
+    database: process.env.RAVENDB_DATABASE as string,
+    collections: { users: defineCollection({ name: 'Users', schema: userSchema }) },
+  })
+
+// Hot reload re-evaluates modules, and each evaluation would build another
+// client with its own sockets and timers. Keep one across reloads in development.
+const globalForRaven = globalThis as { ravenDb?: AppDatabase; ravenReady?: Promise<unknown> }
+
+const db = globalForRaven.ravenDb ?? createAppDatabase()
+const ready = globalForRaven.ravenReady ?? db.connect()
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForRaven.ravenDb = db
+  globalForRaven.ravenReady = ready
+}
+
+export async function getDb(): Promise<AppDatabase> {
+  await ready
+  return db
+}
+```
+
+```ts
+// app/api/users/route.ts
+import { getDb } from '@/lib/db'
+
+export async function GET() {
+  const db = await getDb()
+  return Response.json(await db.users.findMany({ take: 50 }))
+}
+```
+
+`connect()` is idempotent, so awaiting the shared promise on every request costs nothing after the first. The RavenDB client needs Node APIs such as `tls` and sockets, so run these handlers on the Node.js runtime rather than an edge runtime.
 
 ## Document lifecycle
 
