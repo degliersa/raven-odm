@@ -56,6 +56,8 @@ describe('session lifecycle policy', () => {
           bind: (b) => {
             binding = b
           },
+          // The database releases what it bound; the probe holds no state to release.
+          unbind: () => {},
         },
       ],
     })
