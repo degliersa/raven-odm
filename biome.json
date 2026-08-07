@@ -3,5 +3,5 @@
   "linter": { "enabled": true, "rules": { "preset": "recommended" } },
   "formatter": { "enabled": true, "indentStyle": "space", "lineWidth": 100 },
   "javascript": { "formatter": { "quoteStyle": "single", "semicolons": "asNeeded" } },
-  "files": { "includes": ["**", "!dist", "!coverage"] }
+  "files": { "includes": ["**", "!dist", "!coverage", "!.changeset/pre.json"] }
 }
