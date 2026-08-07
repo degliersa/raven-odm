@@ -32,7 +32,6 @@ describe('ID generators', () => {
     CustomUsers = defineCollection({
       name: 'CustomUsers',
       schema: userSchema,
-      idStrategy: 'hilo',
       idGenerator: ({ document, collection, database }) => {
         customContext = { collection, database, name: document.name }
         return `custom/${document.name.toLowerCase()}`
@@ -77,13 +76,31 @@ describe('ID generators', () => {
     await expect(ServerUsers.findById(created.id)).resolves.toEqual(created)
   })
 
-  it('uses a custom generator before the configured strategy', async () => {
+  it('uses a custom generator with the collection and database in context', async () => {
     const created = await CustomUsers.create({ name: 'Custom', email: 'custom@example.com' })
     expect(created.id).toBe('custom/custom')
     expect(customContext).toEqual({
       collection: 'CustomUsers',
       database: testDatabase.name,
       name: 'Custom',
+    })
+  })
+
+  it('rejects a collection that configures both an idGenerator and an idStrategy', () => {
+    let thrown: unknown
+    try {
+      defineCollection({
+        name: 'AmbiguousUsers',
+        schema: userSchema,
+        idStrategy: 'hilo',
+        idGenerator: () => 'ambiguous/1',
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toMatchObject({
+      code: 'invalid_configuration',
+      collection: 'AmbiguousUsers',
     })
   })
 })
