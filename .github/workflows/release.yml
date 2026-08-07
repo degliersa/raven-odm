@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     branches: [main]
+  # A push event that never reaches Actions is not replayed once it recovers, so
+  # a release can be stranded with no way to start it. This is that way.
+  workflow_dispatch:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 

@@ -7,6 +7,7 @@ export type RavenOdmErrorCode =
   | 'not_connected'
   | 'already_bound'
   | 'invalid_configuration'
+  | 'query_timeout'
   | 'raven_error'
 
 export interface RavenOdmErrorContext {
@@ -82,4 +83,17 @@ export function normalizeRavenError(err: unknown, ctx: RavenOdmErrorContext): Ra
     return new ConcurrencyConflictError(message, { ...ctx, cause: err })
   }
   return new RavenOdmError('raven_error', message, { ...ctx, cause: err })
+}
+
+/**
+ * Queries add one failure the other operations cannot produce: RavenDB gives up
+ * waiting for a stale auto-index. That is a caller-tunable timeout, not a
+ * provider fault, so it gets its own code instead of `raven_error`.
+ */
+export function normalizeQueryError(err: unknown, ctx: RavenOdmErrorContext): RavenOdmError {
+  if (err instanceof RavenOdmError) return err
+  if (err instanceof Error && err.name === 'TimeoutException') {
+    return new RavenOdmError('query_timeout', err.message, { ...ctx, cause: err })
+  }
+  return normalizeRavenError(err, ctx)
 }

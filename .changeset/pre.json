@@ -4,5 +4,11 @@
   "initialVersions": {
     "@degliersa/raven-odm": "0.0.0"
   },
-  "changesets": ["initial-alpha-release", "lovely-bananas-follow"]
+  "changesets": [
+    "initial-alpha-release",
+    "lovely-bananas-follow",
+    "olive-pianos-shave",
+    "thick-melons-shake",
+    "tidy-moons-repeat"
+  ]
 }
