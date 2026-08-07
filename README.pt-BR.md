@@ -24,29 +24,29 @@ Esta definição usa as APIs atuais `defineCollection`, `createDatabase`, `creat
 import { z } from 'zod'
 import { createDatabase, defineCollection } from '@degliersa/raven-odm'
 
-const Users = defineCollection({
-  name: 'Users',
-  schema: z.object({
-    name: z.string().min(1),
-    email: z.email(),
-  }),
-})
-
 const db = createDatabase({
   urls: ['http://127.0.0.1:8080'],
   database: 'example',
-  collections: [Users],
+  collections: {
+    users: defineCollection({
+      name: 'Users',
+      schema: z.object({
+        name: z.string().min(1),
+        email: z.email(),
+      }),
+    }),
+  },
 })
 
 await db.connect()
 
-const created = await Users.create({
+const created = await db.users.create({
   name: 'Maria',
   email: 'maria@example.com',
 })
 
-const byId = await Users.findById(created.id)
-const matching = await Users.findMany({
+const byId = await db.users.findById(created.id)
+const matching = await db.users.findMany({
   where: { email: 'maria@example.com' },
 })
 
@@ -54,7 +54,7 @@ console.log({ created, byId, matching })
 await db.dispose()
 ```
 
-O `schema` é a fonte única para validação e tipos de documento inferidos. O nome da collection é explícito, e `create` retorna um documento com `id`.
+O `schema` é a fonte única para validação e tipos de documento inferidos. As coleções são acessadas pelo banco conectado — `db.users` — e a chave do objeto nomeia apenas o acessor: a coleção do RavenDB continua sendo exatamente o `name` que você deu. O `create` retorna um documento com `id`.
 
 | Abordagem | Novo documento | Validação | Tipagem | Código repetitivo |
 |-----------|----------------|-----------|---------|-------------------|
@@ -127,41 +127,43 @@ Este exemplo define uma coleção, conecta um banco de dados e executa criação
 import { z } from 'zod'
 import { createDatabase, defineCollection } from '@degliersa/raven-odm'
 
-const Users = defineCollection({
-  name: 'Users',
-  schema: z.object({
-    name: z.string().min(1),
-    email: z.email(),
-  }),
-})
-
 const db = createDatabase({
   urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8080'],
   database: process.env.RAVENDB_DATABASE ?? 'example',
-  collections: [Users],
+  collections: {
+    users: defineCollection({
+      name: 'Users',
+      schema: z.object({
+        name: z.string().min(1),
+        email: z.email(),
+      }),
+    }),
+  },
 })
 
 await db.connect()
 
 try {
-  const created = await Users.create({
+  const created = await db.users.create({
     name: 'Maria',
     email: 'maria@example.com',
   })
-  const loaded = await Users.findById(created.id)
-  const updated = await Users.update(created.id, { name: 'Maria Silva' })
-  const matching = await Users.findMany({
+  const loaded = await db.users.findById(created.id)
+  const updated = await db.users.update(created.id, { name: 'Maria Silva' })
+  const matching = await db.users.findMany({
     where: { email: 'maria@example.com' },
   })
 
   console.log({ created, loaded, updated, matching })
-  await Users.delete(created.id)
+  await db.users.delete(created.id)
 } finally {
   await db.dispose()
 }
 ```
 
-Os nomes das coleções são exatos. Uma coleção chamada `Order` é armazenada na coleção `Order` do RavenDB, e não em uma coleção `Orders` pluralizada automaticamente.
+Os nomes das coleções são exatos. Uma coleção chamada `Order` é armazenada na coleção `Order` do RavenDB, e não em uma coleção `Orders` pluralizada automaticamente. Isso vale também para o acessor: `collections: { orders: defineCollection({ name: 'Order', ... }) }` te dá `db.orders`, gravando na coleção `Order`.
+
+Uma chave que sombrearia a API do próprio banco — `database`, `store`, `connect`, `dispose`, `transaction`, `openSession` — é rejeitada, em tempo de compilação e de novo em tempo de execução.
 
 ## Validadores
 
@@ -182,10 +184,16 @@ A estratégia padrão `idStrategy: 'uuid'` cria intencionalmente um ID conhecido
 Use `idGenerator` para IDs definidos pela aplicação. Ele recebe o documento validado, o nome da coleção e o nome do banco de dados. `idGenerator` e `idStrategy` são mutuamente exclusivos: uma coleção que define os dois é rejeitada com `invalid_configuration`, de modo que a origem do ID fica sempre visível na definição.
 
 ```ts
-const Users = defineCollection({
-  name: 'Users',
-  schema: userSchema,
-  idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
+const db = createDatabase({
+  urls,
+  database: 'example',
+  collections: {
+    users: defineCollection({
+      name: 'Users',
+      schema: userSchema,
+      idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
+    }),
+  },
 })
 ```
 
@@ -217,8 +225,8 @@ Os métodos CRUD de conveniência abrem, salvam e descartam uma sessão automati
 
 ```ts
 await db.transaction(async (session) => {
-  await Users.create({ name: 'Maria', email: 'maria@example.com' }, { session })
-  await Orders.create({ status: 'pending', total: 42 }, { session })
+  await db.users.create({ name: 'Maria', email: 'maria@example.com' }, { session })
+  await db.orders.create({ status: 'pending', total: 42 }, { session })
 })
 ```
 
@@ -232,7 +240,7 @@ Defina `optimisticConcurrency: true` para habilitar a concorrência otimista do 
 const db = createDatabase({
   urls,
   database,
-  collections: [Users],
+  collections: { users: Users },
   optimisticConcurrency: true,
 })
 ```
@@ -261,7 +269,7 @@ As falhas do RavenDB são normalizadas em subclasses de `RavenOdmError`. Inspeci
 Use `db.store` para acessar o `IDocumentStore` nativo ou execute uma operação nativa em uma sessão de coleção:
 
 ```ts
-await Users.raw(async (session) => {
+await db.users.raw(async (session) => {
   const raw = await session.load('Users/1-A')
   console.log(raw)
 })

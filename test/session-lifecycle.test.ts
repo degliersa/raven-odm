@@ -48,9 +48,9 @@ describe('session lifecycle policy', () => {
     db = createDatabase({
       urls: ['http://127.0.0.1:8099'],
       database: 'session-lifecycle',
-      collections: [
-        Users,
-        {
+      collections: {
+        users: Users,
+        probe: {
           name: 'Probe',
           descriptor: probe,
           bind: (b) => {
@@ -59,7 +59,7 @@ describe('session lifecycle policy', () => {
           // The database releases what it bound; the probe holds no state to release.
           unbind: () => {},
         },
-      ],
+      },
     })
     await db.connect()
 

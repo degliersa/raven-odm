@@ -26,29 +26,29 @@ This definition uses the current `defineCollection`, `createDatabase`, `create`,
 import { z } from 'zod'
 import { createDatabase, defineCollection } from '@degliersa/raven-odm'
 
-const Users = defineCollection({
-  name: 'Users',
-  schema: z.object({
-    name: z.string().min(1),
-    email: z.email(),
-  }),
-})
-
 const db = createDatabase({
   urls: ['http://127.0.0.1:8080'],
   database: 'example',
-  collections: [Users],
+  collections: {
+    users: defineCollection({
+      name: 'Users',
+      schema: z.object({
+        name: z.string().min(1),
+        email: z.email(),
+      }),
+    }),
+  },
 })
 
 await db.connect()
 
-const created = await Users.create({
+const created = await db.users.create({
   name: 'Maria',
   email: 'maria@example.com',
 })
 
-const byId = await Users.findById(created.id)
-const matching = await Users.findMany({
+const byId = await db.users.findById(created.id)
+const matching = await db.users.findMany({
   where: { email: 'maria@example.com' },
 })
 
@@ -56,7 +56,7 @@ console.log({ created, byId, matching })
 await db.dispose()
 ```
 
-The `schema` is the single source for validation and inferred document types. The collection name is explicit, and `create` returns a document with an `id`.
+The `schema` is the single source for validation and inferred document types. Collections are reached through the connected database — `db.users` — and the object key names the accessor only: the RavenDB collection stays exactly the `name` you gave it. `create` returns a document with an `id`.
 
 | Approach | New document | Validation | Typing | Repetitive code |
 |-----------|----------------|-----------|---------|-------------------|
@@ -129,41 +129,43 @@ This example defines a collection, connects a database, and exercises create, re
 import { z } from 'zod'
 import { createDatabase, defineCollection } from '@degliersa/raven-odm'
 
-const Users = defineCollection({
-  name: 'Users',
-  schema: z.object({
-    name: z.string().min(1),
-    email: z.email(),
-  }),
-})
-
 const db = createDatabase({
   urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8080'],
   database: process.env.RAVENDB_DATABASE ?? 'example',
-  collections: [Users],
+  collections: {
+    users: defineCollection({
+      name: 'Users',
+      schema: z.object({
+        name: z.string().min(1),
+        email: z.email(),
+      }),
+    }),
+  },
 })
 
 await db.connect()
 
 try {
-  const created = await Users.create({
+  const created = await db.users.create({
     name: 'Maria',
     email: 'maria@example.com',
   })
-  const loaded = await Users.findById(created.id)
-  const updated = await Users.update(created.id, { name: 'Maria Silva' })
-  const matching = await Users.findMany({
+  const loaded = await db.users.findById(created.id)
+  const updated = await db.users.update(created.id, { name: 'Maria Silva' })
+  const matching = await db.users.findMany({
     where: { email: 'maria@example.com' },
   })
 
   console.log({ created, loaded, updated, matching })
-  await Users.delete(created.id)
+  await db.users.delete(created.id)
 } finally {
   await db.dispose()
 }
 ```
 
-Collection names are exact. A collection named `Order` is stored in RavenDB's `Order` collection, not an automatically pluralized `Orders` collection.
+Collection names are exact. A collection named `Order` is stored in RavenDB's `Order` collection, not an automatically pluralized `Orders` collection. That is true of the accessor too: `collections: { orders: defineCollection({ name: 'Order', ... }) }` gives you `db.orders`, writing to the `Order` collection.
+
+A key that would shadow the database's own API — `database`, `store`, `connect`, `dispose`, `transaction`, `openSession` — is rejected, at compile time and again at runtime.
 
 ## Validators
 
@@ -184,10 +186,16 @@ The default `idStrategy: 'uuid'` intentionally creates a known client-side ID in
 Use `idGenerator` for application-defined IDs. It receives the validated document, collection name, and database name. `idGenerator` and `idStrategy` are mutually exclusive: a collection that sets both is rejected with `invalid_configuration`, so the ID source is always visible in the definition.
 
 ```ts
-const Users = defineCollection({
-  name: 'Users',
-  schema: userSchema,
-  idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
+const db = createDatabase({
+  urls,
+  database: 'example',
+  collections: {
+    users: defineCollection({
+      name: 'Users',
+      schema: userSchema,
+      idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
+    }),
+  },
 })
 ```
 
@@ -219,8 +227,8 @@ Convenience CRUD methods open, save, and dispose a session automatically. Use `t
 
 ```ts
 await db.transaction(async (session) => {
-  await Users.create({ name: 'Maria', email: 'maria@example.com' }, { session })
-  await Orders.create({ status: 'pending', total: 42 }, { session })
+  await db.users.create({ name: 'Maria', email: 'maria@example.com' }, { session })
+  await db.orders.create({ status: 'pending', total: 42 }, { session })
 })
 ```
 
@@ -234,7 +242,7 @@ Set `optimisticConcurrency: true` to enable RavenDB optimistic concurrency for e
 const db = createDatabase({
   urls,
   database,
-  collections: [Users],
+  collections: { users: Users },
   optimisticConcurrency: true,
 })
 ```
@@ -263,7 +271,7 @@ RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`,
 Use `db.store` for the native `IDocumentStore`, or run a native operation in a collection session:
 
 ```ts
-await Users.raw(async (session) => {
+await db.users.raw(async (session) => {
   const raw = await session.load('Users/1-A')
   console.log(raw)
 })

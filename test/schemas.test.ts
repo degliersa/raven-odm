@@ -12,16 +12,15 @@ async function exerciseSchema<S extends typeof zodSchema | typeof valibotSchema>
   input: { name: string; email: string },
 ): Promise<void> {
   const testDatabase = await withDatabase()
-  const collection = defineCollection({ name: 'People', schema })
   const db = createDatabase({
     urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8099'],
     database: testDatabase.name,
-    collections: [collection],
+    collections: { people: defineCollection({ name: 'People', schema }) },
   })
   try {
     await db.connect()
-    const created = await collection.create(input)
-    await expect(collection.findById(created.id)).resolves.toEqual({ ...input, id: created.id })
+    const created = await db.people.create(input)
+    await expect(db.people.findById(created.id)).resolves.toEqual({ ...input, id: created.id })
   } finally {
     await db.dispose()
     await testDatabase.dispose()
