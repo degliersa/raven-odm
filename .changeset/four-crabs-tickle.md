@@ -32,4 +32,4 @@ await db.orders.increment("Orders/1-A", "total", 5);
 
 `findPage()` reads one page together with the total number of matching documents in a single query, instead of a separate `count()`. `take` is required.
 
-`increment()` adds a delta to a numeric field on the server, atomically, with no read and no lost update under concurrent writers. It resolves to `void` and requires the document to already exist, throwing `document_not_found` otherwise.
+`increment()` adds a delta to a numeric field on the server, atomically, with no read and no lost update under concurrent writers. It resolves to `void`. Incrementing a missing document's field is not an error — the same way `delete()` treats a missing id as already satisfied — RavenDB's patch silently does nothing when there is no document to apply it to.

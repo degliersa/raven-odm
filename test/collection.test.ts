@@ -215,7 +215,7 @@ describe('Collection CRUD', () => {
     expect(filtered.total).toBe(1)
   })
 
-  it('increments a numeric field atomically and reports a missing document', async () => {
+  it('increments a numeric field atomically and does nothing for a missing document', async () => {
     const order = await db.order.create({ status: 'pending', total: 10 })
     await db.order.increment(order.id, 'total', 5)
     await expect(db.order.findById(order.id)).resolves.toEqual({
@@ -224,9 +224,8 @@ describe('Collection CRUD', () => {
       id: order.id,
     })
 
-    await expect(db.order.increment('Order/missing', 'total', 1)).rejects.toMatchObject({
-      code: 'document_not_found',
-    })
+    await expect(db.order.increment('Order/missing', 'total', 1)).resolves.toBeUndefined()
+    await expect(db.order.findById('Order/missing')).resolves.toBeNull()
   })
 
   it('deletes documents', async () => {

@@ -333,7 +333,7 @@ A stale save throws `ConcurrencyConflictError` with `code === 'concurrency_confl
 await db.orders.increment('Orders/1-A', 'total', 5)
 ```
 
-`field` is restricted at the type level to keys of the schema whose value is a `number`. `increment()` resolves to `void` — like `store()`, the command is deferred until `saveChanges()` runs, so it never hands back the new value; reload with `findById()` if you need to see it. The target document must already exist, or it throws `document_not_found`.
+`field` is restricted at the type level to keys of the schema whose value is a `number`. `increment()` resolves to `void` — like `store()`, the command is deferred until `saveChanges()` runs, so it never hands back the new value; reload with `findById()` if you need to see it. Incrementing a missing document's field is not an error, the same way `delete()` treats a missing id as already satisfied: RavenDB's patch silently does nothing when there is no document to apply it to.
 
 ## Errors
 
@@ -344,14 +344,14 @@ RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`,
 | `validation_failed` | Input or read validation failed; `ValidationError.issues` contains the Standard Schema issues. |
 | `batch_validation_failed` | One or more items failed validation in `createMany`; `BatchValidationError.failures` names every failing index. |
 | `concurrency_conflict` | Optimistic concurrency rejected a stale write. |
-| `document_not_found` | An `update` or `increment` targeted a missing document. |
+| `document_not_found` | An `update` targeted a missing document. |
 | `not_connected` | A database or collection was used before `connect()`. |
 | `already_bound` | A collection was attached to more than one database. |
 | `invalid_configuration` | Collection or database configuration is invalid, or `idStrategy: 'server'` was used where its id could never be read back (an external session, or `bulkInsert()`). |
 | `query_timeout` | `findMany`, `findOne`, `findPage`, or `count` waited for a non-stale index and the wait ran out. |
 | `raven_error` | An unclassified RavenDB client/server failure. |
 
-`findById` returns `null` for a missing document; it does not throw `document_not_found`.
+`findById` returns `null` for a missing document; it does not throw `document_not_found`. Neither does `increment`, which silently does nothing for a missing document — see [Atomic counters](#atomic-counters).
 
 ## Native escape hatches
 

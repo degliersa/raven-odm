@@ -104,13 +104,6 @@ export function normalizeRavenError(err: unknown, ctx: RavenOdmErrorContext): Ra
   if (name === 'ConcurrencyException' || name === 'ClusterTransactionConcurrencyException') {
     return new ConcurrencyConflictError(message, { ...ctx, cause: err })
   }
-  // The client's own type declarations list both spellings; map either defensively.
-  if (
-    (name === 'DocumentDoesNotExistException' || name === 'DocumentDoesNotExistsException') &&
-    ctx.documentId
-  ) {
-    return new DocumentNotFoundError({ ...ctx, documentId: ctx.documentId, cause: err })
-  }
   return new RavenOdmError('raven_error', message, { ...ctx, cause: err })
 }
 

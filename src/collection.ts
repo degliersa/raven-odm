@@ -709,12 +709,15 @@ export class Collection<S extends DocumentSchema> {
    * call `saveChanges()`. Either way, this resolves to `void` — reload with
    * `findById()` if you need the new value.
    *
+   * Incrementing a missing document's field is not an error, the same way
+   * `delete()` treats a missing id as already satisfied: RavenDB's patch
+   * silently does nothing when there is no document to apply it to. Nothing
+   * is created and nothing is signaled back.
+   *
    * @example
    * ```ts
    * await db.orders.increment('Orders/1-A', 'total', 5)
    * ```
-   *
-   * @throws `RavenOdmError` with `document_not_found` — no document has that id.
    */
   async increment(
     id: string,

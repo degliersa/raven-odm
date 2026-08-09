@@ -331,7 +331,7 @@ O `update()` é read-modify-write, o que é arriscado para um valor derivado do 
 await db.orders.increment('Orders/1-A', 'total', 5)
 ```
 
-O `field` é restrito em nível de tipo às chaves do schema cujo valor é `number`. O `increment()` resolve para `void` — como o `store()`, o comando fica pendente até o `saveChanges()` rodar, então ele nunca devolve o novo valor; recarregue com `findById()` se precisar vê-lo. O documento alvo precisa já existir, ou ele lança `document_not_found`.
+O `field` é restrito em nível de tipo às chaves do schema cujo valor é `number`. O `increment()` resolve para `void` — como o `store()`, o comando fica pendente até o `saveChanges()` rodar, então ele nunca devolve o novo valor; recarregue com `findById()` se precisar vê-lo. Incrementar o campo de um documento inexistente não é um erro, do mesmo jeito que o `delete()` trata um id ausente como já satisfeito: o patch do RavenDB simplesmente não faz nada quando não há documento para aplicá-lo.
 
 ## Erros
 
@@ -342,14 +342,14 @@ As falhas do RavenDB são normalizadas em subclasses de `RavenOdmError`. Inspeci
 | `validation_failed` | A validação da entrada ou da leitura falhou; `ValidationError.issues` contém os problemas do Standard Schema. |
 | `batch_validation_failed` | Um ou mais itens falharam na validação em `createMany`; `BatchValidationError.failures` nomeia todo índice que falhou. |
 | `concurrency_conflict` | A concorrência otimista rejeitou uma gravação obsoleta. |
-| `document_not_found` | Um `update` ou `increment` teve como alvo um documento inexistente. |
+| `document_not_found` | Um `update` teve como alvo um documento inexistente. |
 | `not_connected` | Um banco de dados ou coleção foi usado antes de `connect()`. |
 | `already_bound` | Uma coleção foi vinculada a mais de um banco de dados. |
 | `invalid_configuration` | A configuração da coleção ou do banco de dados é inválida, ou `idStrategy: 'server'` foi usada onde seu id nunca poderia ser lido de volta (uma sessão externa, ou `bulkInsert()`). |
 | `query_timeout` | O `findMany`, `findOne`, `findPage` ou `count` esperou por um índice não obsoleto e a espera se esgotou. |
 | `raven_error` | Uma falha não classificada do cliente/servidor RavenDB. |
 
-`findById` retorna `null` para um documento inexistente; ele não lança `document_not_found`.
+`findById` retorna `null` para um documento inexistente; ele não lança `document_not_found`. O `increment` também não — ele simplesmente não faz nada para um documento inexistente; veja [Contadores atômicos](#contadores-atômicos).
 
 ## Escape hatches nativos
 
