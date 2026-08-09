@@ -47,8 +47,8 @@ const server: IdStrategy<DocumentSchema> = async ({ collection, sessionProvided 
       'Collection "' +
         collection +
         "\" uses idStrategy 'server', whose id is only assigned by " +
-        "saveChanges(). Pass an idGenerator or use idStrategy 'uuid' to create documents inside " +
-        'an external session.',
+        "saveChanges(). Pass an idGenerator or use idStrategy 'uuid' when this call does not " +
+        'control its own saveChanges() — an external session, or bulkInsert().',
       { collection },
     )
   }

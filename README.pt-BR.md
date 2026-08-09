@@ -223,9 +223,9 @@ Esgotar a espera lança `RavenOdmError` com `code === 'query_timeout'`. Esperar 
 
 O `findMany()` sem `take` retorna todos os documentos correspondentes. Isso é tranquilo em uma coleção limitada e é um risco de memória em uma grande, então passe `take` quando o resultado puder crescer.
 
-## Ler um só, contar e checar existência
+## Ler um só, contar, paginar e checar existência
 
-Três leituras existem ao lado do `findMany` para quando o conjunto completo não é o que você precisa.
+Algumas leituras existem ao lado do `findMany` para quando o conjunto completo não é o que você precisa.
 
 O `findOne()` aceita o mesmo `where` e `orderBy` do `findMany`, solicita no máximo um documento e retorna esse documento ou `null`:
 
@@ -252,6 +252,48 @@ const present = await db.users.exists('Users/1-A')
 ```
 
 Ler por id nunca é obsoleto. O `exists()` retorna `false` para um id ausente; ele nunca lança `document_not_found`.
+
+O `findPage()` lê uma página junto com o total de documentos correspondentes, em uma única consulta em vez de um `count()` separado:
+
+```ts
+const page = await db.users.findPage({
+  where: { status: 'active' },
+  orderBy: { field: 'name' },
+  skip: 20,
+  take: 10,
+})
+page.data  // até 10 documentos
+page.total // todos os documentos correspondentes, não só esta página
+```
+
+O `take` é obrigatório — paginação sem um tamanho de página reintroduziria o risco de memória que um `findMany()` sem limite já carrega. O `findPage()` compartilha o mesmo contrato de `where`, `orderBy` e `waitForNonStaleResults` do `findMany`.
+
+## Criando muitos documentos de uma vez
+
+O `createMany()` valida todos os documentos e grava todos eles em um único `saveChanges()` atômico — o RavenDB confirma o lote inteiro ou nenhum dele:
+
+```ts
+const users = await db.users.createMany([
+  { name: 'Maria', email: 'maria@example.com' },
+  { name: 'Bob', email: 'bob@example.com' },
+])
+```
+
+Se algum item falhar na validação, nada é gravado, e o `BatchValidationError` lançado nomeia todo item que falhou por meio de `failures: { index, issues }[]` — não só o primeiro.
+
+Essa atomicidade é limitada pelo que uma única transação do RavenDB permite, então não é pensada para importações muito grandes. Para isso — transmitir uma fonte grande ou menos confiável, como um CSV em que cada linha vira um documento — use o `bulkInsert()`, que envolve a API nativa de bulk insert do RavenDB:
+
+```ts
+const bulk = await db.users.bulkInsert()
+for (const row of csvRows) {
+  await bulk.write(parseRow(row)) // validado por item, conforme o stream avança
+}
+const result = await bulk.finish()
+result.written  // documentos de fato gravados
+result.failures // itens pulados, só quando abortOnError é false
+```
+
+O `bulkInsert()` **não é atômico**: o RavenDB confirma internamente em lotes, então uma interrupção no meio do caminho pode deixar alguns documentos gravados e outros não. O `abortOnError` (padrão `true`) controla o que acontece quando um item falha na validação: parar o stream inteiro, ou definir como `false` para pular esse item e continuar, reportando cada item pulado no `finish()`. Como nunca chama `saveChanges()`, uma coleção com `idStrategy: 'server'` rejeita o `bulkInsert()` pelo mesmo motivo que rejeita uma sessão externa — o id atribuído pelo servidor nunca poderia ser lido de volta.
 
 ## Sessões e Unit of Work
 
@@ -281,6 +323,16 @@ const db = createDatabase({
 
 Um salvamento obsoleto lança `ConcurrencyConflictError` com `code === 'concurrency_conflict'`. Com o padrão `false`, o RavenDB mantém o comportamento de last-write-wins.
 
+## Contadores atômicos
+
+O `update()` é read-modify-write, o que é arriscado para um valor derivado do seu próprio valor anterior, como um contador. O `increment()` soma um delta a um campo numérico no servidor, atomicamente, sem leitura e sem perda de atualização sob gravações concorrentes:
+
+```ts
+await db.orders.increment('Orders/1-A', 'total', 5)
+```
+
+O `field` é restrito em nível de tipo às chaves do schema cujo valor é `number`. O `increment()` resolve para `void` — como o `store()`, o comando fica pendente até o `saveChanges()` rodar, então ele nunca devolve o novo valor; recarregue com `findById()` se precisar vê-lo. O documento alvo precisa já existir, ou ele lança `document_not_found`.
+
 ## Erros
 
 As falhas do RavenDB são normalizadas em subclasses de `RavenOdmError`. Inspecione `code`, `collection` e `documentId` em vez de comparar classes de exceção específicas da implementação do RavenDB.
@@ -288,12 +340,13 @@ As falhas do RavenDB são normalizadas em subclasses de `RavenOdmError`. Inspeci
 | Código | Significado |
 | --- | --- |
 | `validation_failed` | A validação da entrada ou da leitura falhou; `ValidationError.issues` contém os problemas do Standard Schema. |
+| `batch_validation_failed` | Um ou mais itens falharam na validação em `createMany`; `BatchValidationError.failures` nomeia todo índice que falhou. |
 | `concurrency_conflict` | A concorrência otimista rejeitou uma gravação obsoleta. |
-| `document_not_found` | Uma atualização teve como alvo um documento inexistente. |
+| `document_not_found` | Um `update` ou `increment` teve como alvo um documento inexistente. |
 | `not_connected` | Um banco de dados ou coleção foi usado antes de `connect()`. |
 | `already_bound` | Uma coleção foi vinculada a mais de um banco de dados. |
-| `invalid_configuration` | A configuração da coleção ou do banco de dados é inválida. |
-| `query_timeout` | O `findMany`, `findOne` ou `count` esperou por um índice não obsoleto e a espera se esgotou. |
+| `invalid_configuration` | A configuração da coleção ou do banco de dados é inválida, ou `idStrategy: 'server'` foi usada onde seu id nunca poderia ser lido de volta (uma sessão externa, ou `bulkInsert()`). |
+| `query_timeout` | O `findMany`, `findOne`, `findPage` ou `count` esperou por um índice não obsoleto e a espera se esgotou. |
 | `raven_error` | Uma falha não classificada do cliente/servidor RavenDB. |
 
 `findById` retorna `null` para um documento inexistente; ele não lança `document_not_found`.

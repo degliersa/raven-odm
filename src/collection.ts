@@ -1,6 +1,18 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import type { IDocumentSession } from 'ravendb'
-import { normalizeQueryError, normalizeRavenError, RavenOdmError } from './errors'
+import type {
+  BulkInsertOperation,
+  BulkInsertOptions,
+  IDocumentSession,
+  IMetadataDictionary,
+} from 'ravendb'
+import {
+  BatchValidationError,
+  type BatchValidationFailure,
+  normalizeQueryError,
+  normalizeRavenError,
+  RavenOdmError,
+  ValidationError,
+} from './errors'
 import { type IdStrategy, selectIdStrategy } from './id-strategy'
 import { validate } from './validate'
 
@@ -84,6 +96,58 @@ export interface CountOptions<S extends DocumentSchema> extends SessionOption {
   readonly waitForNonStaleResults?: boolean | number | undefined
 }
 
+export interface FindPageOptions<S extends DocumentSchema> extends SessionOption {
+  readonly where?: Partial<StandardSchemaV1.InferOutput<S>> | undefined
+  readonly orderBy?:
+    | { readonly field: string; readonly descending?: boolean | undefined }
+    | undefined
+  readonly skip?: number | undefined
+  /** Required: pagination without a page size reintroduces the memory hazard `findMany` warns about. */
+  readonly take: number
+  /** Same staleness contract as {@link FindManyOptions.waitForNonStaleResults}. */
+  readonly waitForNonStaleResults?: boolean | number | undefined
+}
+
+export interface FindPageResult<S extends DocumentSchema> {
+  readonly data: Doc<S>[]
+  /** Total matching documents, ignoring `skip`/`take` — from RavenDB's query statistics. */
+  readonly total: number
+}
+
+/** Keys of the document whose value is a `number` — the only fields `increment` accepts. */
+export type NumericKeys<S extends DocumentSchema> = {
+  [K in keyof StandardSchemaV1.InferOutput<S>]: StandardSchemaV1.InferOutput<S>[K] extends number
+    ? K
+    : never
+}[keyof StandardSchemaV1.InferOutput<S>]
+
+export interface BulkInsertOptionsOdm {
+  /**
+   * When an item fails validation: `true` aborts the whole stream at that item,
+   * `false` skips it and continues, collecting the failure to report from `finish()`.
+   * Default: `true`.
+   */
+  readonly abortOnError?: boolean | undefined
+}
+
+export interface BulkInsertResult {
+  readonly written: number
+  readonly failures: ReadonlyArray<BatchValidationFailure>
+}
+
+export interface BulkInsertHandle<S extends DocumentSchema> {
+  /**
+   * Validates and streams one document. Under `abortOnError: true` (the default),
+   * a validation failure both rejects this call and ends the stream — every
+   * following `write`/`finish` call rejects with the same error. Under
+   * `abortOnError: false`, a validation failure resolves silently and is recorded
+   * for `finish()` to report; nothing is sent to the server for that item.
+   */
+  write(data: StandardSchemaV1.InferInput<S>): Promise<void>
+  /** Flushes the stream and reports how many documents were written and which were skipped. */
+  finish(): Promise<BulkInsertResult>
+}
+
 export interface OdmSession {
   readonly raw: IDocumentSession
   saveChanges(): Promise<void>
@@ -109,6 +173,8 @@ export interface CollectionBinding {
   /** Reserves the next HiLo id for this collection. Takes no document: the id
    * depends on the collection, never on what is being stored. */
   generateDocumentId(): Promise<string>
+  /** Opens a native bulk-insert stream against this collection's database. */
+  bulkInsert(options?: BulkInsertOptions): BulkInsertOperation
 }
 
 export class Collection<S extends DocumentSchema> {
@@ -264,6 +330,84 @@ export class Collection<S extends DocumentSchema> {
     })
   }
 
+  /** Validates every item, collecting every failure instead of stopping at the first. */
+  async #validateAll(items: readonly unknown[]): Promise<StandardSchemaV1.InferOutput<S>[]> {
+    const values: StandardSchemaV1.InferOutput<S>[] = []
+    const failures: BatchValidationFailure[] = []
+    for (const [index, item] of items.entries()) {
+      try {
+        values.push(await validate(this.schema, item, { collection: this.name }))
+      } catch (err) {
+        if (!(err instanceof ValidationError)) throw err
+        failures.push({ index, issues: err.issues })
+      }
+    }
+    if (failures.length > 0) {
+      throw new BatchValidationError(failures, { collection: this.name })
+    }
+    return values
+  }
+
+  /**
+   * Validates every document and stores all of them in one `saveChanges()`,
+   * atomically: if any item fails validation, nothing is written and the
+   * thrown `BatchValidationError` names every failing index.
+   *
+   * @example
+   * ```ts
+   * const users = await db.users.createMany([
+   *   { name: 'Maria', email: 'maria@example.com' },
+   *   { name: 'Bob', email: 'bob@example.com' },
+   * ])
+   * ```
+   *
+   * @throws `BatchValidationError` — one or more items do not satisfy the schema.
+   * @throws `RavenOdmError` with `invalid_configuration` — `idStrategy: 'server'`
+   * cannot be used with an external session.
+   */
+  async createMany(
+    data: readonly StandardSchemaV1.InferInput<S>[],
+    opts: SessionOption = {},
+  ): Promise<Doc<S>[]> {
+    const binding = this.#bound()
+    const values = await this.#validateAll(data)
+    const items: {
+      value: StandardSchemaV1.InferOutput<S>
+      payload: Record<string, unknown>
+      id: string
+    }[] = []
+    for (const value of values) {
+      const payload = { ...(value as Record<string, unknown>) }
+      delete payload.id
+      const id = await this.#resolveId({
+        document: value,
+        collection: this.name,
+        database: binding.database,
+        sessionProvided: opts.session !== undefined,
+        reserveId: () => binding.generateDocumentId(),
+      })
+      items.push({ value, payload, id })
+    }
+
+    return binding.runInSession(opts.session, async (s, owned) => {
+      try {
+        for (const item of items) {
+          await s.raw.store(item.payload, item.id, binding.descriptor as never)
+        }
+        if (owned) await s.saveChanges()
+      } catch (err) {
+        throw normalizeRavenError(err, { collection: this.name })
+      }
+      return items.map(
+        (item) =>
+          ({
+            ...item.value,
+            id: s.raw.advanced.getDocumentId(item.payload) ?? item.id,
+          }) as Doc<S>,
+      )
+    })
+  }
+
   /**
    * Loads one document by id, or `null` when it does not exist.
    *
@@ -370,6 +514,51 @@ export class Collection<S extends DocumentSchema> {
         throw normalizeQueryError(err, { collection: this.name })
       }
       return Promise.all(rows.map((r) => this.#hydrate(r)))
+    })
+  }
+
+  /**
+   * Reads one page of documents together with the total number of matching
+   * documents, in a single query — one round trip instead of a separate
+   * `count()`.
+   *
+   * `take` is required: pagination without a page size reintroduces the memory
+   * hazard an unbounded `findMany()` already warns about. `total` reflects
+   * every matching document, ignoring `skip`/`take`.
+   *
+   * @example
+   * ```ts
+   * const page = await db.users.findPage({
+   *   where: { status: 'active' },
+   *   orderBy: { field: 'name' },
+   *   skip: 20,
+   *   take: 10,
+   * })
+   * page.data   // up to 10 documents
+   * page.total  // every matching document, not just this page
+   * ```
+   *
+   * @throws `RavenOdmError` with `query_timeout` — the wait for a non-stale index
+   * ran out.
+   */
+  async findPage(opts: FindPageOptions<S>): Promise<FindPageResult<S>> {
+    const binding = this.#bound()
+    return this.#withSession(opts.session, async (s) => {
+      let q = this.#buildQuery(s, binding, opts)
+      let total = 0
+      q = q.statistics((stats) => {
+        total = stats.totalResults
+      })
+      if (opts.skip !== undefined) q = q.skip(opts.skip)
+      q = q.take(opts.take)
+      let rows: Record<string, unknown>[]
+      try {
+        rows = await q.all()
+      } catch (err) {
+        throw normalizeQueryError(err, { collection: this.name })
+      }
+      const data = await Promise.all(rows.map((r) => this.#hydrate(r)))
+      return { data, total }
     })
   }
 
@@ -508,6 +697,39 @@ export class Collection<S extends DocumentSchema> {
   }
 
   /**
+   * Adds `delta` to a numeric field on the server, atomically — no read, no
+   * merge, no re-validation, and no lost update under concurrent writers.
+   *
+   * The command is deferred like `store()`: with no session it is sent on the
+   * trailing `saveChanges()`; with an external session it is sent whenever you
+   * call `saveChanges()`. Either way, this resolves to `void` — reload with
+   * `findById()` if you need the new value.
+   *
+   * @example
+   * ```ts
+   * await db.orders.increment('Orders/1-A', 'total', 5)
+   * ```
+   *
+   * @throws `RavenOdmError` with `document_not_found` — no document has that id.
+   */
+  async increment(
+    id: string,
+    field: NumericKeys<S>,
+    delta: number,
+    opts: SessionOption = {},
+  ): Promise<void> {
+    const binding = this.#bound()
+    await binding.runInSession(opts.session, async (s, owned) => {
+      try {
+        s.raw.advanced.increment(id, field as string, delta)
+        if (owned) await s.saveChanges()
+      } catch (err) {
+        throw normalizeRavenError(err, { collection: this.name, documentId: id })
+      }
+    })
+  }
+
+  /**
    * Deletes the document with this id.
    *
    * Deleting an id that does not exist is not an error — RavenDB treats the
@@ -527,6 +749,96 @@ export class Collection<S extends DocumentSchema> {
         throw normalizeRavenError(err, { collection: this.name, documentId: id })
       }
     })
+  }
+
+  /**
+   * Streams documents into this collection outside a session, for a dataset too
+   * large for `createMany`'s single-transaction round trip.
+   *
+   * Not atomic: RavenDB commits internally in chunks, so an interruption
+   * partway through can leave some documents written and others not. Each
+   * `write()` validates before sending, so nothing invalid ever reaches the
+   * server, but `abortOnError` decides what happens to the stream itself:
+   * `true` (the default) stops it at the first invalid item, `false` skips
+   * that item and continues, reporting it from `finish()` instead.
+   *
+   * `idStrategy: 'server'` is rejected — like an external session, this never
+   * calls `saveChanges()`, so the server-assigned id could never be read back.
+   *
+   * @example
+   * ```ts
+   * const bulk = await db.users.bulkInsert()
+   * for (const row of csvRows) {
+   *   await bulk.write(parseRow(row))
+   * }
+   * const result = await bulk.finish()
+   * result.written   // documents actually stored
+   * result.failures  // skipped items, only when abortOnError is false
+   * ```
+   *
+   * @throws `ValidationError` — a document fails validation while `abortOnError`
+   * is `true`.
+   * @throws `RavenOdmError` with `invalid_configuration` — this collection uses
+   * `idStrategy: 'server'`.
+   */
+  async bulkInsert(opts: BulkInsertOptionsOdm = {}): Promise<BulkInsertHandle<S>> {
+    const binding = this.#bound()
+    const abortOnError = opts.abortOnError ?? true
+    const op = binding.bulkInsert()
+    const failures: BatchValidationFailure[] = []
+    let index = 0
+    let written = 0
+    let stopped: unknown
+
+    const write = async (data: StandardSchemaV1.InferInput<S>): Promise<void> => {
+      if (stopped !== undefined) throw stopped
+      const current = index++
+
+      let value: StandardSchemaV1.InferOutput<S>
+      try {
+        value = await validate(this.schema, data, { collection: this.name })
+      } catch (err) {
+        if (!(err instanceof ValidationError)) throw err
+        failures.push({ index: current, issues: err.issues })
+        if (!abortOnError) return
+        stopped = err
+        await op.abort().catch(() => {})
+        throw err
+      }
+
+      const payload = { ...(value as Record<string, unknown>) }
+      delete payload.id
+      // Never flushes through this call, the same reason an external session
+      // can't use idStrategy 'server' either — see id-strategy.ts.
+      const id = await this.#resolveId({
+        document: value,
+        collection: this.name,
+        database: binding.database,
+        sessionProvided: true,
+        reserveId: () => binding.generateDocumentId(),
+      })
+
+      try {
+        await op.store(payload, id, { '@collection': this.name } as IMetadataDictionary)
+        written++
+      } catch (err) {
+        const normalized = normalizeRavenError(err, { collection: this.name, documentId: id })
+        stopped = normalized
+        throw normalized
+      }
+    }
+
+    const finish = async (): Promise<BulkInsertResult> => {
+      if (stopped !== undefined) throw stopped
+      try {
+        await op.finish()
+      } catch (err) {
+        throw normalizeRavenError(err, { collection: this.name })
+      }
+      return { written, failures }
+    }
+
+    return { write, finish }
   }
 
   /**

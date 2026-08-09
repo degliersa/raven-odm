@@ -2,6 +2,7 @@ import type { StandardSchemaV1 } from '@standard-schema/spec'
 
 export type RavenOdmErrorCode =
   | 'validation_failed'
+  | 'batch_validation_failed'
   | 'concurrency_conflict'
   | 'document_not_found'
   | 'not_connected'
@@ -61,6 +62,27 @@ export class ValidationError extends RavenOdmError {
   }
 }
 
+export interface BatchValidationFailure {
+  readonly index: number
+  readonly issues: ReadonlyArray<StandardSchemaV1.Issue>
+}
+
+/** Thrown by `createMany` when one or more items fail validation; nothing is written. */
+export class BatchValidationError extends RavenOdmError {
+  override readonly name = 'BatchValidationError'
+  readonly failures: ReadonlyArray<BatchValidationFailure>
+
+  constructor(failures: ReadonlyArray<BatchValidationFailure>, ctx: RavenOdmErrorContext = {}) {
+    const detail = failures.map((f) => `[${f.index}] ${formatIssues(f.issues)}`).join('; ')
+    super(
+      'batch_validation_failed',
+      `Validation failed for ${failures.length} item(s) in collection "${ctx.collection ?? '?'}": ${detail}`,
+      ctx,
+    )
+    this.failures = failures
+  }
+}
+
 export class ConcurrencyConflictError extends RavenOdmError {
   override readonly name = 'ConcurrencyConflictError'
   constructor(message: string, ctx: RavenOdmErrorContext = {}) {
@@ -81,6 +103,13 @@ export function normalizeRavenError(err: unknown, ctx: RavenOdmErrorContext): Ra
   const message = err instanceof Error ? err.message : String(err)
   if (name === 'ConcurrencyException' || name === 'ClusterTransactionConcurrencyException') {
     return new ConcurrencyConflictError(message, { ...ctx, cause: err })
+  }
+  // The client's own type declarations list both spellings; map either defensively.
+  if (
+    (name === 'DocumentDoesNotExistException' || name === 'DocumentDoesNotExistsException') &&
+    ctx.documentId
+  ) {
+    return new DocumentNotFoundError({ ...ctx, documentId: ctx.documentId, cause: err })
   }
   return new RavenOdmError('raven_error', message, { ...ctx, cause: err })
 }

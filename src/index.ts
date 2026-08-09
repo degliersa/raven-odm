@@ -1,4 +1,7 @@
 export type {
+  BulkInsertHandle,
+  BulkInsertOptionsOdm,
+  BulkInsertResult,
   CollectionDescriptor,
   CollectionOptions,
   CountOptions,
@@ -6,8 +9,11 @@ export type {
   DocumentSchema,
   FindManyOptions,
   FindOneOptions,
+  FindPageOptions,
+  FindPageResult,
   IdGenerator,
   IdGeneratorContext,
+  NumericKeys,
   OdmSession,
   SessionOption,
 } from './collection'
@@ -20,8 +26,9 @@ export type {
   ReservedCollectionKey,
 } from './database'
 export { createDatabase, Database } from './database'
-export type { RavenOdmErrorCode, RavenOdmErrorContext } from './errors'
+export type { BatchValidationFailure, RavenOdmErrorCode, RavenOdmErrorContext } from './errors'
 export {
+  BatchValidationError,
   ConcurrencyConflictError,
   DocumentNotFoundError,
   formatIssues,
