@@ -129,6 +129,45 @@ describe('Collection CRUD', () => {
     expect(withTimeout.map(({ name }) => name)).toEqual(['Fresh', 'Fresher'])
   })
 
+  it('counts matching documents and the whole collection without hydrating them', async () => {
+    await db.users.create({ name: 'Alice', email: 'alice@example.com' })
+    await db.users.create({ name: 'Bob', email: 'bob@example.com' })
+    await db.users.create({ name: 'Carol', email: 'carol@example.com' })
+    expect(await db.users.count({ where: { name: 'Bob' } })).toBe(1)
+    expect(await db.users.count({ where: { name: 'nobody' } })).toBe(0)
+    expect(await db.users.count()).toBe(3)
+  })
+
+  it('counts respect waitForNonStaleResults the same way findMany does', async () => {
+    expect(await db.users.count({ where: { name: 'nobody' } })).toBe(0)
+    await db.users.create({ name: 'Fresh', email: 'fresh@example.com' })
+    expect(await db.users.count({ where: { name: 'Fresh' }, waitForNonStaleResults: true })).toBe(1)
+  })
+
+  it('reports existence by id without throwing for a missing one', async () => {
+    const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' })
+    expect(await db.users.exists(user.id)).toBe(true)
+    expect(await db.users.exists('user_missing')).toBe(false)
+  })
+
+  it('finds one document matching a filter, or null, and lets orderBy pick which', async () => {
+    expect(await db.users.findOne({ where: { name: 'Bob' } })).toBeNull()
+
+    await db.users.create({ name: 'Alice', email: 'alice@example.com' })
+    await db.users.create({ name: 'Bob', email: 'bob@example.com' })
+
+    await expect(db.users.findOne({ where: { name: 'Bob' } })).resolves.toEqual({
+      name: 'Bob',
+      email: 'bob@example.com',
+      id: 'user_bob',
+    })
+
+    const first = await db.users.findOne({ orderBy: { field: 'name' } })
+    expect(first?.name).toBe('Alice')
+    const last = await db.users.findOne({ orderBy: { field: 'name', descending: true } })
+    expect(last?.name).toBe('Bob')
+  })
+
   it('deletes documents', async () => {
     const user = await db.users.create({ name: 'Maria', email: 'maria@example.com' })
     await db.users.delete(user.id)
