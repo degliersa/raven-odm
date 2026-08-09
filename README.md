@@ -225,6 +225,36 @@ Exhausting the wait raises `RavenOdmError` with `code === 'query_timeout'`. Wait
 
 `findMany()` without `take` returns every matching document. That is fine for a bounded collection and a memory hazard for a large one, so pass `take` when the result set can grow.
 
+## Reading one, counting, and checking existence
+
+Three reads exist alongside `findMany` for when the full result set is not what you need.
+
+`findOne()` takes the same `where` and `orderBy` as `findMany`, requests at most one document, and returns it or `null`:
+
+```ts
+const user = await db.users.findOne({ where: { email: 'maria@example.com' } })
+const newest = await db.users.findOne({ orderBy: { field: 'createdAt', descending: true } })
+```
+
+Several documents matching `where` is not an error — `findOne` returns the first one seen, and `orderBy` is how you make "first" deterministic.
+
+`count()` answers how many documents match, without loading or validating any of them:
+
+```ts
+const active = await db.users.count({ where: { status: 'active' } })
+const total = await db.users.count() // the whole collection
+```
+
+`count()` goes through the same auto-index as a filtered `findMany` and accepts the same `waitForNonStaleResults`.
+
+`exists()` answers whether a document with an id is present, without loading it:
+
+```ts
+const present = await db.users.exists('Users/1-A')
+```
+
+Reading by id is never stale. `exists()` returns `false` for a missing id; it never throws `document_not_found`.
+
 ## Sessions and Unit of Work
 
 Convenience CRUD methods open, save, and dispose a session automatically. Use `transaction` to group writes across collections:
@@ -265,7 +295,7 @@ RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`,
 | `not_connected` | A database or collection was used before `connect()`. |
 | `already_bound` | A collection was attached to more than one database. |
 | `invalid_configuration` | Collection or database configuration is invalid. |
-| `query_timeout` | `findMany` waited for a non-stale index and the wait ran out. |
+| `query_timeout` | `findMany`, `findOne`, or `count` waited for a non-stale index and the wait ran out. |
 | `raven_error` | An unclassified RavenDB client/server failure. |
 
 `findById` returns `null` for a missing document; it does not throw `document_not_found`.

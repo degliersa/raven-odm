@@ -1,9 +1,11 @@
 export type {
   CollectionDescriptor,
   CollectionOptions,
+  CountOptions,
   Doc,
   DocumentSchema,
   FindManyOptions,
+  FindOneOptions,
   IdGenerator,
   IdGeneratorContext,
   OdmSession,
