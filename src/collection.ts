@@ -75,6 +75,15 @@ export interface FindManyOptions<S extends DocumentSchema> extends SessionOption
   readonly waitForNonStaleResults?: boolean | number | undefined
 }
 
+/** `findOne` applies its own `take: 1`, so `skip`/`take` are rejected at the type level. */
+export type FindOneOptions<S extends DocumentSchema> = Omit<FindManyOptions<S>, 'skip' | 'take'>
+
+export interface CountOptions<S extends DocumentSchema> extends SessionOption {
+  readonly where?: Partial<StandardSchemaV1.InferOutput<S>> | undefined
+  /** Same staleness contract as {@link FindManyOptions.waitForNonStaleResults}. */
+  readonly waitForNonStaleResults?: boolean | number | undefined
+}
+
 export interface OdmSession {
   readonly raw: IDocumentSession
   saveChanges(): Promise<void>
@@ -286,6 +295,42 @@ export class Collection<S extends DocumentSchema> {
     return { ...value, id } as Doc<S>
   }
 
+  /** Shared by every read that filters or orders: `findMany`, `findOne`, `count`. */
+  #buildQuery(
+    s: OdmSession,
+    binding: CollectionBinding,
+    opts: {
+      readonly where?: Partial<StandardSchemaV1.InferOutput<S>> | undefined
+      readonly orderBy?:
+        | { readonly field: string; readonly descending?: boolean | undefined }
+        | undefined
+      readonly waitForNonStaleResults?: boolean | number | undefined
+    },
+  ) {
+    let q = s.raw.query<Record<string, unknown>>({
+      collection: this.name,
+      documentType: binding.descriptor as never,
+    })
+    const wait = opts.waitForNonStaleResults
+    if (wait === true) q = q.waitForNonStaleResults()
+    else if (typeof wait === 'number') q = q.waitForNonStaleResults(wait)
+    const where = opts.where as Record<string, unknown> | undefined
+    if (where) {
+      let first = true
+      for (const [field, value] of Object.entries(where)) {
+        if (!first) q = q.andAlso()
+        q = q.whereEquals(field, value)
+        first = false
+      }
+    }
+    if (opts.orderBy) {
+      q = opts.orderBy.descending
+        ? q.orderByDescending(opts.orderBy.field)
+        : q.orderBy(opts.orderBy.field)
+    }
+    return q
+  }
+
   /**
    * Reads documents from the collection. Entries in `where` are combined with
    * AND and compared for equality; anything richer belongs in {@link raw}.
@@ -315,27 +360,7 @@ export class Collection<S extends DocumentSchema> {
   async findMany(opts: FindManyOptions<S> = {}): Promise<Doc<S>[]> {
     const binding = this.#bound()
     return this.#withSession(opts.session, async (s) => {
-      let q = s.raw.query<Record<string, unknown>>({
-        collection: this.name,
-        documentType: binding.descriptor as never,
-      })
-      const wait = opts.waitForNonStaleResults
-      if (wait === true) q = q.waitForNonStaleResults()
-      else if (typeof wait === 'number') q = q.waitForNonStaleResults(wait)
-      const where = opts.where as Record<string, unknown> | undefined
-      if (where) {
-        let first = true
-        for (const [field, value] of Object.entries(where)) {
-          if (!first) q = q.andAlso()
-          q = q.whereEquals(field, value)
-          first = false
-        }
-      }
-      if (opts.orderBy) {
-        q = opts.orderBy.descending
-          ? q.orderByDescending(opts.orderBy.field)
-          : q.orderBy(opts.orderBy.field)
-      }
+      let q = this.#buildQuery(s, binding, opts)
       if (opts.skip !== undefined) q = q.skip(opts.skip)
       if (opts.take !== undefined) q = q.take(opts.take)
       let rows: Record<string, unknown>[]
@@ -345,6 +370,87 @@ export class Collection<S extends DocumentSchema> {
         throw normalizeQueryError(err, { collection: this.name })
       }
       return Promise.all(rows.map((r) => this.#hydrate(r)))
+    })
+  }
+
+  /**
+   * Reads the first document matching `where`/`orderBy`, or `null` when nothing
+   * matches. Requests at most one document from the server.
+   *
+   * Several documents matching `where` is not an error: this returns the first
+   * one seen, and `orderBy` is how a caller makes "first" deterministic.
+   *
+   * @example
+   * ```ts
+   * const user = await db.users.findOne({ where: { email: 'maria@example.com' } })
+   * const newest = await db.users.findOne({ orderBy: { field: 'createdAt', descending: true } })
+   * ```
+   *
+   * @throws `RavenOdmError` with `query_timeout` — the wait for a non-stale index
+   * ran out.
+   */
+  async findOne(opts: FindOneOptions<S> = {}): Promise<Doc<S> | null> {
+    const binding = this.#bound()
+    return this.#withSession(opts.session, async (s) => {
+      const q = this.#buildQuery(s, binding, opts)
+      let row: Record<string, unknown> | null
+      try {
+        row = await q.firstOrNull()
+      } catch (err) {
+        throw normalizeQueryError(err, { collection: this.name })
+      }
+      return row ? this.#hydrate(row) : null
+    })
+  }
+
+  /**
+   * Counts documents matching `where`, without loading or validating any of
+   * them. Without `where` this counts the whole collection.
+   *
+   * `where` is answered by the same auto-index `findMany` uses, so it inherits
+   * the same staleness contract: pass `waitForNonStaleResults` to observe a
+   * write that just happened.
+   *
+   * @example
+   * ```ts
+   * const active = await db.users.count({ where: { status: 'active' } })
+   * const total = await db.users.count()
+   * ```
+   *
+   * @throws `RavenOdmError` with `query_timeout` — the wait for a non-stale index
+   * ran out.
+   */
+  async count(opts: CountOptions<S> = {}): Promise<number> {
+    const binding = this.#bound()
+    return this.#withSession(opts.session, async (s) => {
+      const q = this.#buildQuery(s, binding, opts)
+      try {
+        return await q.count()
+      } catch (err) {
+        throw normalizeQueryError(err, { collection: this.name })
+      }
+    })
+  }
+
+  /**
+   * Reports whether a document with this id exists, without loading it.
+   *
+   * Reading by id is never stale, unlike a `count()` with `where`. A missing
+   * id answers `false` rather than throwing `document_not_found`.
+   *
+   * @example
+   * ```ts
+   * const present = await db.users.exists('Users/1-A')
+   * ```
+   */
+  async exists(id: string, opts: SessionOption = {}): Promise<boolean> {
+    this.#bound()
+    return this.#withSession(opts.session, async (s) => {
+      try {
+        return await s.raw.advanced.exists(id)
+      } catch (err) {
+        throw normalizeRavenError(err, { collection: this.name, documentId: id })
+      }
     })
   }
 

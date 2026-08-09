@@ -223,6 +223,36 @@ Esgotar a espera lança `RavenOdmError` com `code === 'query_timeout'`. Esperar 
 
 O `findMany()` sem `take` retorna todos os documentos correspondentes. Isso é tranquilo em uma coleção limitada e é um risco de memória em uma grande, então passe `take` quando o resultado puder crescer.
 
+## Ler um só, contar e checar existência
+
+Três leituras existem ao lado do `findMany` para quando o conjunto completo não é o que você precisa.
+
+O `findOne()` aceita o mesmo `where` e `orderBy` do `findMany`, solicita no máximo um documento e retorna esse documento ou `null`:
+
+```ts
+const user = await db.users.findOne({ where: { email: 'maria@example.com' } })
+const newest = await db.users.findOne({ orderBy: { field: 'createdAt', descending: true } })
+```
+
+Vários documentos correspondendo ao `where` não é um erro — o `findOne` retorna o primeiro encontrado, e `orderBy` é como você torna "primeiro" determinístico.
+
+O `count()` responde quantos documentos correspondem, sem carregar ou validar nenhum deles:
+
+```ts
+const active = await db.users.count({ where: { status: 'active' } })
+const total = await db.users.count() // a coleção inteira
+```
+
+O `count()` passa pelo mesmo auto-índice de um `findMany` filtrado e aceita o mesmo `waitForNonStaleResults`.
+
+O `exists()` responde se um documento com um id está presente, sem carregá-lo:
+
+```ts
+const present = await db.users.exists('Users/1-A')
+```
+
+Ler por id nunca é obsoleto. O `exists()` retorna `false` para um id ausente; ele nunca lança `document_not_found`.
+
 ## Sessões e Unit of Work
 
 Os métodos CRUD de conveniência abrem, salvam e descartam uma sessão automaticamente. Use `transaction` para agrupar gravações entre coleções:
@@ -263,7 +293,7 @@ As falhas do RavenDB são normalizadas em subclasses de `RavenOdmError`. Inspeci
 | `not_connected` | Um banco de dados ou coleção foi usado antes de `connect()`. |
 | `already_bound` | Uma coleção foi vinculada a mais de um banco de dados. |
 | `invalid_configuration` | A configuração da coleção ou do banco de dados é inválida. |
-| `query_timeout` | O `findMany` esperou por um índice não obsoleto e a espera se esgotou. |
+| `query_timeout` | O `findMany`, `findOne` ou `count` esperou por um índice não obsoleto e a espera se esgotou. |
 | `raven_error` | Uma falha não classificada do cliente/servidor RavenDB. |
 
 `findById` retorna `null` para um documento inexistente; ele não lança `document_not_found`.
