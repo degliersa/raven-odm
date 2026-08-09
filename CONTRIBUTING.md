@@ -5,9 +5,16 @@ Thank you for helping improve `@degliersa/raven-odm`. Contributions are welcome 
 ## Before opening an issue
 
 - Search existing issues and pull requests first.
-- Include the package version, Node.js version, RavenDB server version, and validator version when reporting a bug.
-- For runtime bugs, include a minimal reproduction that does not contain credentials or private documents.
+- Use the bug report or feature request template; both ask for what a useful report needs (versions, minimal reproduction, or motivation and proposed shape).
 - Security reports must not be filed publicly. Contact the maintainers privately with reproduction steps and impact.
+
+## Design proposals
+
+Any change to the public API, to the `RavenOdmError` contract, or to any other documented, observable behavior — not just breaking changes — starts with a short issue, not a PR. Open one with the "Design proposal" template: state the motivation, sketch the proposed shape, note alternatives you considered, and call out the compatibility impact.
+
+There is no formal review period or sign-off quorum here — this is sized for a project with one maintainer. The point is only to write the why before the how, so a design that turns out to be wrong is caught before code gets written around it.
+
+When the proposal is resolved, comment on the issue with the decision — accepted as proposed, accepted with changes, rejected, or deferred — and why. That comment is the design record: it stays discoverable on the issue instead of scattered across PR descriptions that scroll out of relevance. The implementing PR references the issue with "Closes #"; it does not need to happen in the same sitting as the proposal.
 
 ## Development setup
 
@@ -53,13 +60,18 @@ RAVENDB_URL=http://127.0.0.1:8099 npm test
 ## Pull requests
 
 1. Create a focused branch from `main`.
-2. Explain the user-visible behavior and the reason for the change.
-3. Add or update integration coverage for every new observable behavior.
-4. Update `README.md`, `CONTRIBUTING.md`, or an example when the public workflow changes.
-5. Run all quality gates locally and include the results in the pull request description.
-6. Keep unrelated formatting or refactors out of the pull request.
+2. If the change touches public API or observable behavior, link the design-proposal issue it implements.
+3. Explain the user-visible behavior and the reason for the change.
+4. Add or update integration coverage for every new observable behavior.
+5. Update `README.md`, `CONTRIBUTING.md`, or an example when the public workflow changes.
+6. Run all quality gates locally and include the results in the pull request description.
+7. Keep unrelated formatting or refactors out of the pull request.
 
-Pull requests should be small enough to review as one coherent change. Reviewers may request changes when an API addition duplicates an existing path, weakens type safety, hides a RavenDB error, or lacks a real-server test.
+The pull request template's checklist mirrors this list. Pull requests should be small enough to review as one coherent change. Reviewers may request changes when an API addition duplicates an existing path, weakens type safety, hides a RavenDB error, or lacks a real-server test.
+
+## Roadmap
+
+Issue #29 tracks the prioritized backlog with an ICE (Impact/Confidence/Ease) score per item. At each minor or major release, add a dated header to that issue — "Snapshot: <Month Year>" — recording what shipped, what got reprioritized, and what was deferred, so the backlog's history stays visible instead of only reflecting its current state.
 
 ## Changesets and releases
 
