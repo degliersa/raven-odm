@@ -77,7 +77,7 @@ describe('bulkInsert', () => {
     const result = await bulk.finish()
 
     expect(result.written).toBe(2)
-    expect(result.failures).toEqual([{ index: 1, issues: { length: 2 } }])
+    expect(result.failures).toMatchObject([{ index: 1, issues: { length: 2 } }])
     const stored = await db.users.findMany({ orderBy: { field: 'name' } })
     expect(stored.map(({ name }) => name)).toEqual(['Alice', 'Carol'])
   })

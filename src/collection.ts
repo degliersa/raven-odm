@@ -4,6 +4,7 @@ import type {
   BulkInsertOptions,
   IDocumentSession,
   IMetadataDictionary,
+  QueryStatistics,
 } from 'ravendb'
 import {
   BatchValidationError,
@@ -545,9 +546,12 @@ export class Collection<S extends DocumentSchema> {
     const binding = this.#bound()
     return this.#withSession(opts.session, async (s) => {
       let q = this.#buildQuery(s, binding, opts)
-      let total = 0
-      q = q.statistics((stats) => {
-        total = stats.totalResults
+      // .statistics() hands back a live reference immediately, before the query
+      // runs — totalResults is only populated on that same object once `all()`
+      // resolves, so it must be read after awaiting, never inside this callback.
+      let stats: QueryStatistics | undefined
+      q = q.statistics((qs) => {
+        stats = qs
       })
       if (opts.skip !== undefined) q = q.skip(opts.skip)
       q = q.take(opts.take)
@@ -558,7 +562,7 @@ export class Collection<S extends DocumentSchema> {
         throw normalizeQueryError(err, { collection: this.name })
       }
       const data = await Promise.all(rows.map((r) => this.#hydrate(r)))
-      return { data, total }
+      return { data, total: stats?.totalResults ?? 0 }
     })
   }
 
