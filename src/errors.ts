@@ -2,6 +2,7 @@ import type { StandardSchemaV1 } from '@standard-schema/spec'
 
 export type RavenOdmErrorCode =
   | 'validation_failed'
+  | 'batch_validation_failed'
   | 'concurrency_conflict'
   | 'document_not_found'
   | 'not_connected'
@@ -58,6 +59,27 @@ export class ValidationError extends RavenOdmError {
       ctx,
     )
     this.issues = issues
+  }
+}
+
+export interface BatchValidationFailure {
+  readonly index: number
+  readonly issues: ReadonlyArray<StandardSchemaV1.Issue>
+}
+
+/** Thrown by `createMany` when one or more items fail validation; nothing is written. */
+export class BatchValidationError extends RavenOdmError {
+  override readonly name = 'BatchValidationError'
+  readonly failures: ReadonlyArray<BatchValidationFailure>
+
+  constructor(failures: ReadonlyArray<BatchValidationFailure>, ctx: RavenOdmErrorContext = {}) {
+    const detail = failures.map((f) => `[${f.index}] ${formatIssues(f.issues)}`).join('; ')
+    super(
+      'batch_validation_failed',
+      `Validation failed for ${failures.length} item(s) in collection "${ctx.collection ?? '?'}": ${detail}`,
+      ctx,
+    )
+    this.failures = failures
   }
 }
 

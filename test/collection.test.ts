@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import {
+  BatchValidationError,
   type Collection,
   createDatabase,
   defineCollection,
@@ -166,6 +167,65 @@ describe('Collection CRUD', () => {
     expect(first?.name).toBe('Alice')
     const last = await db.users.findOne({ orderBy: { field: 'name', descending: true } })
     expect(last?.name).toBe('Bob')
+  })
+
+  it('creates many documents in one atomic saveChanges', async () => {
+    const users = await db.users.createMany([
+      { name: 'Alice', email: 'alice@example.com' },
+      { name: 'Bob', email: 'bob@example.com' },
+    ])
+    expect(users).toEqual([
+      { name: 'Alice', email: 'alice@example.com', id: 'user_alice' },
+      { name: 'Bob', email: 'bob@example.com', id: 'user_bob' },
+    ])
+    expect((await db.users.findMany()).length).toBe(2)
+  })
+
+  it('writes nothing from createMany when any item fails validation, reporting every failing index', async () => {
+    await expect(
+      db.users.createMany([
+        { name: 'Alice', email: 'alice@example.com' },
+        { name: '', email: 'nope' },
+        { name: 'Carol', email: 'also-nope' },
+      ]),
+    ).rejects.toMatchObject({
+      code: 'batch_validation_failed',
+      failures: [
+        { index: 1, issues: { length: 2 } },
+        { index: 2, issues: { length: 1 } },
+      ],
+    })
+    await expect(db.users.createMany([{ name: '', email: 'nope' }])).rejects.toBeInstanceOf(
+      BatchValidationError,
+    )
+    expect(await db.users.findMany()).toEqual([])
+  })
+
+  it('paginates with a total from query statistics', async () => {
+    await db.users.create({ name: 'Alice', email: 'alice@example.com' })
+    await db.users.create({ name: 'Bob', email: 'bob@example.com' })
+    await db.users.create({ name: 'Carol', email: 'carol@example.com' })
+
+    const page = await db.users.findPage({ orderBy: { field: 'name' }, skip: 1, take: 1 })
+    expect(page.data.map(({ name }) => name)).toEqual(['Bob'])
+    expect(page.total).toBe(3)
+
+    const filtered = await db.users.findPage({ where: { name: 'Bob' }, take: 10 })
+    expect(filtered.data.map(({ name }) => name)).toEqual(['Bob'])
+    expect(filtered.total).toBe(1)
+  })
+
+  it('increments a numeric field atomically and does nothing for a missing document', async () => {
+    const order = await db.order.create({ status: 'pending', total: 10 })
+    await db.order.increment(order.id, 'total', 5)
+    await expect(db.order.findById(order.id)).resolves.toEqual({
+      status: 'pending',
+      total: 15,
+      id: order.id,
+    })
+
+    await expect(db.order.increment('Order/missing', 'total', 1)).resolves.toBeUndefined()
+    await expect(db.order.findById('Order/missing')).resolves.toBeNull()
   })
 
   it('deletes documents', async () => {

@@ -225,9 +225,9 @@ Exhausting the wait raises `RavenOdmError` with `code === 'query_timeout'`. Wait
 
 `findMany()` without `take` returns every matching document. That is fine for a bounded collection and a memory hazard for a large one, so pass `take` when the result set can grow.
 
-## Reading one, counting, and checking existence
+## Reading one, counting, paginating, and checking existence
 
-Three reads exist alongside `findMany` for when the full result set is not what you need.
+A few reads exist alongside `findMany` for when the full result set is not what you need.
 
 `findOne()` takes the same `where` and `orderBy` as `findMany`, requests at most one document, and returns it or `null`:
 
@@ -254,6 +254,48 @@ const present = await db.users.exists('Users/1-A')
 ```
 
 Reading by id is never stale. `exists()` returns `false` for a missing id; it never throws `document_not_found`.
+
+`findPage()` reads one page together with the total number of matching documents, in a single query instead of a separate `count()`:
+
+```ts
+const page = await db.users.findPage({
+  where: { status: 'active' },
+  orderBy: { field: 'name' },
+  skip: 20,
+  take: 10,
+})
+page.data  // up to 10 documents
+page.total // every matching document, not just this page
+```
+
+`take` is required — pagination without a page size reintroduces the memory hazard an unbounded `findMany()` already carries. `findPage()` shares `findMany`'s `where`, `orderBy`, and `waitForNonStaleResults` contract.
+
+## Creating many documents at once
+
+`createMany()` validates every document and stores all of them in a single, atomic `saveChanges()` — RavenDB either commits the whole batch or none of it:
+
+```ts
+const users = await db.users.createMany([
+  { name: 'Maria', email: 'maria@example.com' },
+  { name: 'Bob', email: 'bob@example.com' },
+])
+```
+
+If any item fails validation, nothing is written, and the thrown `BatchValidationError` names every failing item through `failures: { index, issues }[]` — not just the first one.
+
+That atomicity is bounded by what a single RavenDB transaction allows, so it is not meant for very large imports. For that — streaming a large or less-trusted source, such as a CSV where each row becomes a document — use `bulkInsert()`, which wraps RavenDB's native bulk-insert API:
+
+```ts
+const bulk = await db.users.bulkInsert()
+for (const row of csvRows) {
+  await bulk.write(parseRow(row)) // validated per item, as it streams
+}
+const result = await bulk.finish()
+result.written  // documents actually stored
+result.failures // skipped items, only when abortOnError is false
+```
+
+`bulkInsert()` is **not atomic**: RavenDB commits internally in chunks, so an interruption partway through can leave some documents written and others not. `abortOnError` (default `true`) controls what happens when one item fails validation: stop the whole stream, or set it to `false` to skip that item and keep going, reporting every skipped item from `finish()` instead. Because it never calls `saveChanges()`, a collection using `idStrategy: 'server'` rejects `bulkInsert()` the same way it rejects an external session — the server-assigned id could never be read back.
 
 ## Sessions and Unit of Work
 
@@ -283,6 +325,16 @@ const db = createDatabase({
 
 A stale save throws `ConcurrencyConflictError` with `code === 'concurrency_conflict'`. With the default `false`, RavenDB retains last-write-wins behavior.
 
+## Atomic counters
+
+`update()` is read-modify-write, which is racy for a value derived from its own previous value, such as a counter. `increment()` adds a delta to a numeric field on the server, atomically, with no read and no lost update under concurrent writers:
+
+```ts
+await db.orders.increment('Orders/1-A', 'total', 5)
+```
+
+`field` is restricted at the type level to keys of the schema whose value is a `number`. `increment()` resolves to `void` — like `store()`, the command is deferred until `saveChanges()` runs, so it never hands back the new value; reload with `findById()` if you need to see it. Incrementing a missing document's field is not an error, the same way `delete()` treats a missing id as already satisfied: RavenDB's patch silently does nothing when there is no document to apply it to.
+
 ## Errors
 
 RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`, `collection`, and `documentId` instead of matching RavenDB implementation-specific exception classes.
@@ -290,15 +342,16 @@ RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`,
 | Code | Meaning |
 | --- | --- |
 | `validation_failed` | Input or read validation failed; `ValidationError.issues` contains the Standard Schema issues. |
+| `batch_validation_failed` | One or more items failed validation in `createMany`; `BatchValidationError.failures` names every failing index. |
 | `concurrency_conflict` | Optimistic concurrency rejected a stale write. |
-| `document_not_found` | An update targeted a missing document. |
+| `document_not_found` | An `update` targeted a missing document. |
 | `not_connected` | A database or collection was used before `connect()`. |
 | `already_bound` | A collection was attached to more than one database. |
-| `invalid_configuration` | Collection or database configuration is invalid. |
-| `query_timeout` | `findMany`, `findOne`, or `count` waited for a non-stale index and the wait ran out. |
+| `invalid_configuration` | Collection or database configuration is invalid, or `idStrategy: 'server'` was used where its id could never be read back (an external session, or `bulkInsert()`). |
+| `query_timeout` | `findMany`, `findOne`, `findPage`, or `count` waited for a non-stale index and the wait ran out. |
 | `raven_error` | An unclassified RavenDB client/server failure. |
 
-`findById` returns `null` for a missing document; it does not throw `document_not_found`.
+`findById` returns `null` for a missing document; it does not throw `document_not_found`. Neither does `increment`, which silently does nothing for a missing document — see [Atomic counters](#atomic-counters).
 
 ## Native escape hatches
 

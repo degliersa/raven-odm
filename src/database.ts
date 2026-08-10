@@ -197,6 +197,8 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
       // it, which is a private property on a document the caller owns.
       generateDocumentId: () =>
         store.conventions.generateDocumentId(this.database, collection.descriptor),
+      bulkInsert: (options) =>
+        options ? store.bulkInsert(this.database, options) : store.bulkInsert(this.database),
     })
     // Recorded only once the bind succeeds. A collection already bound elsewhere
     // belongs to that database, and releasing this one must not detach it.
