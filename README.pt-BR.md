@@ -412,6 +412,27 @@ O `type` é obrigatório: PEM é texto e decodifica pra `string`; PFX é binári
 
 Passar `authOptions` diretamente, montado à mão ou por outra biblioteca, continua funcionando exatamente como hoje — o `certificateFromBase64()` é uma forma de produzi-lo, não a única.
 
+### Produzindo o valor em base64: a CLI `cert-to-env`
+
+Codificar o certificado em si é `fs.readFileSync(caminho).toString('base64')`, uma linha que dá pra escrever à mão. O pacote também traz uma CLI `raven-odm` pequena que faz isso por você, lendo o arquivo e imprimindo só o valor em base64 no stdout — nada de log ou mensagem de sucesso misturado:
+
+```bash
+npx raven-odm cert-to-env ./certificado.pfx
+# ZGVmaW5pdGVseS1ub3QtYS1yZWFsLWNlcnRpZmljYXRl...
+
+npx raven-odm cert-to-env ./certificado.pfx > cert.b64   # ou direcione pra onde precisar
+```
+
+O tipo do certificado é inferido pela extensão do arquivo — `.pfx`/`.p12` → `pfx`, `.pem`/`.crt`/`.cer` → `pem` — igual ao que o `certificateFromBase64()` espera; uma extensão não reconhecida vira um erro claro, nunca um chute. Passe `--ca ./ca.pem` pra codificar um certificado de CA junto, impresso como duas linhas identificadas em vez de um valor solto:
+
+```bash
+npx raven-odm cert-to-env ./certificado.pfx --ca ./ca.pem
+# certificate=ZGVmaW5pdGVseS1ub3QtYS1yZWFsLWNlcnRpZmljYXRl...
+# ca=YW5vdGhlci1ub3QtcmVhbC1jZXJ0aWZpY2F0ZQ==...
+```
+
+A CLI nunca pede nem lida com a senha do certificado: codificar os bytes de um arquivo em base64 não exige descriptografá-lo, então não há nada legítimo a fazer com uma senha ali. Para um `.pfx`, ela imprime um lembrete de uma linha no stderr — nunca no stdout, pra não vazar pra uma saída direcionada — de que a senha ainda precisa ser configurada separadamente, na aplicação, via `certificateFromBase64(valor, { password })`.
+
 ## Implantação
 
 A conexão é um recurso por processo. Onde colocar o `connect()` e o `dispose()` depende de o processo sobreviver ou não a uma requisição.

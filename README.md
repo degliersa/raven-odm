@@ -414,6 +414,27 @@ It takes the certificate's value, not the environment variable's name — config
 
 Passing `authOptions` directly, built by hand or by another library, keeps working exactly as it does today — `certificateFromBase64()` is one way to produce it, not the only one.
 
+### Producing the base64 value: the `cert-to-env` CLI
+
+Encoding the certificate itself is `fs.readFileSync(path).toString('base64')`, one line you can write by hand. The package also ships a small `raven-odm` CLI that does it for you, reading the file and printing only the base64 value to stdout — nothing that ends up in a log line or a success message mixed in:
+
+```bash
+npx raven-odm cert-to-env ./certificate.pfx
+# ZGVmaW5pdGVseS1ub3QtYS1yZWFsLWNlcnRpZmljYXRl...
+
+npx raven-odm cert-to-env ./certificate.pfx > cert.b64   # or pipe it wherever you need
+```
+
+The certificate type is inferred from the file extension — `.pfx`/`.p12` → `pfx`, `.pem`/`.crt`/`.cer` → `pem` — matching what `certificateFromBase64()` expects; an unrecognized extension is a clear error rather than a guess. Pass `--ca ./ca.pem` to encode a CA certificate alongside it, printed as two labeled lines instead of one bare value:
+
+```bash
+npx raven-odm cert-to-env ./certificate.pfx --ca ./ca.pem
+# certificate=ZGVmaW5pdGVseS1ub3QtYS1yZWFsLWNlcnRpZmljYXRl...
+# ca=YW5vdGhlci1ub3QtcmVhbC1jZXJ0aWZpY2F0ZQ==...
+```
+
+The CLI never asks for or handles a certificate's password: base64-encoding a file's bytes doesn't require decrypting it, so there is nothing legitimate to do with one. For a `.pfx`, it prints a one-line reminder to stderr — never stdout, so it can't leak into piped output — that the password still needs to be configured separately, in the application, via `certificateFromBase64(value, { password })`.
+
 ## Deployment
 
 The connection is a per-process resource. Where you put `connect()` and `dispose()` depends on whether the process outlives a request.
