@@ -347,7 +347,7 @@ RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`,
 | `document_not_found` | An `update` targeted a missing document. |
 | `not_connected` | A database or collection was used before `connect()`. |
 | `already_bound` | A collection was attached to more than one database. |
-| `invalid_configuration` | Collection or database configuration is invalid, or `idStrategy: 'server'` was used where its id could never be read back (an external session, or `bulkInsert()`). |
+| `invalid_configuration` | Collection or database configuration is invalid, `idStrategy: 'server'` was used where its id could never be read back (an external session, or `bulkInsert()`), or `certificateFromBase64()` got a missing or malformed value. |
 | `query_timeout` | `findMany`, `findOne`, `findPage`, or `count` waited for a non-stale index and the wait ran out. |
 | `raven_error` | An unclassified RavenDB client/server failure. |
 
@@ -384,6 +384,35 @@ Two things about these calls are worth knowing before they surprise you:
 
 - **`connect()` does not reach the server.** It attaches collections and initializes the client; the RavenDB client only opens a connection on the first real operation. A wrong URL, an unreachable host, or a missing certificate therefore fails at your first `create()` or `findMany()`, not at startup.
 - **`dispose()` is what lets the process exit.** The client holds sockets and timers, so a script that finishes its work without disposing keeps Node alive.
+
+## Secured connections
+
+`createDatabase` accepts `authOptions` and forwards it to the RavenDB client untouched — secured connections, including RavenDB Cloud, work today. This section exists because that option previously appeared nowhere in either README.
+
+A client certificate as a file on disk means committing a secret to the repository or mounting it into every environment. The common alternative is a base64-encoded environment variable, and `certificateFromBase64()` turns one into `authOptions`:
+
+```ts
+import { createDatabase, certificateFromBase64 } from '@degliersa/raven-odm'
+
+const db = createDatabase({
+  urls: [process.env.RAVENDB_URL!],
+  database: process.env.RAVENDB_DATABASE!,
+  collections: { users },
+  authOptions: certificateFromBase64(process.env.RAVENDB_CERTIFICATE, {
+    type: 'pfx', // or 'pem'
+    password: process.env.RAVENDB_CERTIFICATE_PASSWORD,
+    ca: process.env.RAVENDB_CA, // optional, also base64
+  }),
+})
+```
+
+It takes the certificate's value, not the environment variable's name — configuration loading stays the application's job, and the function stays a pure, testable helper with no I/O of its own.
+
+`type` is required: PEM is text and decodes to a `string`; PFX is binary and decodes to a `Buffer`. `ca` always decodes to a `Buffer`, which the client accepts for either type. An absent, empty, or malformed value raises `invalid_configuration` immediately, naming the option — never a certificate value or its decoded bytes, and never a TLS handshake error minutes later from a secret that was silently truncated.
+
+**Never commit a certificate, its base64 encoding, or its password to the repository.** Load them from your secret manager or environment at runtime, the same way you already load `RAVENDB_URL`.
+
+Passing `authOptions` directly, built by hand or by another library, keeps working exactly as it does today — `certificateFromBase64()` is one way to produce it, not the only one.
 
 ## Deployment
 

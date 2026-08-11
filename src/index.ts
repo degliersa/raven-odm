@@ -1,3 +1,5 @@
+export type { CertificateFromBase64Options } from './certificate'
+export { certificateFromBase64 } from './certificate'
 export type {
   BulkInsertHandle,
   BulkInsertOptionsOdm,
