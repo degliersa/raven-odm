@@ -4,19 +4,19 @@ import {
   type IDocumentSession,
   type IDocumentStore,
 } from 'ravendb'
-import type { CollectionBinding, CollectionDescriptor, OdmSession } from './collection'
+import {
+  type BoundCollection,
+  type Collection,
+  type CollectionBinding,
+  type CollectionDescriptor,
+  createBoundCollection,
+  type DocumentSchema,
+  type OdmSession,
+} from './collection'
 import { normalizeRavenError, RavenOdmError } from './errors'
 
-/** What a database needs from a collection, kept structural. */
-export interface BindableCollection {
-  readonly name: string
-  readonly descriptor: CollectionDescriptor
-  bind(binding: CollectionBinding): void
-  unbind(): void
-}
-
 /** Collections keyed by the name you will reach them under: `db.users`. */
-export type CollectionMap = Readonly<Record<string, BindableCollection>>
+export type CollectionMap = Readonly<Record<string, Collection<DocumentSchema>>>
 
 /**
  * Keys a collection cannot use, because reaching it through the database would
@@ -55,9 +55,16 @@ export interface DatabaseOptions<TCollections extends CollectionMap = Collection
   }
 }
 
-/** A connected database, with its collections reachable as properties. */
+/** Database-owned handles keyed like their collection definitions. */
+export type BoundCollectionMap<TCollections extends CollectionMap> = {
+  readonly [K in keyof TCollections]: TCollections[K] extends Collection<infer S>
+    ? BoundCollection<S>
+    : never
+}
+
+/** A connected database, with its database-owned collection handles. */
 export type RavenDatabase<TCollections extends CollectionMap> = Database<TCollections> &
-  TCollections
+  BoundCollectionMap<TCollections>
 
 class Session implements OdmSession {
   constructor(readonly raw: IDocumentSession) {}
@@ -82,8 +89,6 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
   #options: DatabaseOptions<TCollections>
   /** descriptor -> exact collection name; read live by the findCollectionName override. */
   #registry = new Map<CollectionDescriptor, string>()
-  /** Exactly the collections this database bound, so dispose() releases no others. */
-  #registered = new Set<BindableCollection>()
 
   constructor(options: DatabaseOptions<TCollections>) {
     if (!options.database) {
@@ -102,9 +107,8 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
     this.database = options.database
     this.#optimistic = options.optimisticConcurrency ?? false
 
-    // Attached before connect() so `db.users` is the only way anyone needs to
-    // reach a collection. Using one early still fails with not_connected, which
-    // the collection itself reports.
+    // Each accessor receives its own handle and binding. The definition remains
+    // immutable and can be shared with another Database instance.
     for (const [key, collection] of Object.entries(options.collections)) {
       if (RESERVED_COLLECTION_KEYS.has(key)) {
         throw new RavenOdmError(
@@ -114,7 +118,33 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
           { collection: collection.name },
         )
       }
-      Object.defineProperty(this, key, { value: collection, enumerable: true })
+      const binding: CollectionBinding = {
+        database: this.database,
+        descriptor: collection.descriptor,
+        assertConnected: () => {
+          if (!this.#store) {
+            throw new RavenOdmError(
+              'not_connected',
+              `Collection "${collection.name}" is not attached to a database. ` +
+                'Pass it to createDatabase({ collections: [...] }) and await db.connect().',
+              { collection: collection.name },
+            )
+          }
+        },
+        runInSession: (given, fn) => this.#runInSession(given, fn),
+        // These closures read the current store, so reconnecting this database
+        // keeps every handle usable without changing the shared definition.
+        generateDocumentId: () =>
+          this.store.conventions.generateDocumentId(this.database, collection.descriptor),
+        bulkInsert: (options) =>
+          options
+            ? this.store.bulkInsert(this.database, options)
+            : this.store.bulkInsert(this.database),
+      }
+      Object.defineProperty(this, key, {
+        value: createBoundCollection(collection, binding),
+        enumerable: true,
+      })
     }
   }
 
@@ -129,7 +159,7 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
   }
 
   /**
-   * Attaches every configured collection and initializes the RavenDB client.
+   * Registers every configured collection definition and initializes the RavenDB client.
    * Idempotent: calling it again while connected returns immediately.
    *
    * It does **not** reach the server. The client connects on the first real
@@ -144,8 +174,6 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
    *
    * @throws `RavenOdmError` with `invalid_configuration` — two collections share
    * a RavenDB name.
-   * @throws `RavenOdmError` with `already_bound` — a collection is still attached
-   * to another connected database.
    */
   async connect(): Promise<this> {
     if (this.#store) return this
@@ -170,14 +198,14 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
       // Leave nothing half-registered: a failed connect must be recoverable by
       // fixing the configuration and calling connect() again.
       store.dispose()
-      this.#release()
+      this.#clearRegistry()
       throw normalizeRavenError(err, {})
     }
     this.#store = store
     return this
   }
 
-  #register(store: IDocumentStore, collection: BindableCollection): void {
+  #register(store: IDocumentStore, collection: Collection<DocumentSchema>): void {
     if ([...this.#registry.values()].includes(collection.name)) {
       throw new RavenOdmError(
         'invalid_configuration',
@@ -187,22 +215,6 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
     }
     this.#registry.set(collection.descriptor, collection.name)
     store.conventions.registerEntityType(collection.descriptor as never)
-    collection.bind({
-      database: this.database,
-      descriptor: collection.descriptor,
-      runInSession: (given, fn) => this.#runInSession(given, fn),
-      // The descriptor, not the document: RavenDB resolves the collection from
-      // whatever it is handed, and the descriptor answers isType() for itself.
-      // Passing the payload would require marking it so RavenDB could recognise
-      // it, which is a private property on a document the caller owns.
-      generateDocumentId: () =>
-        store.conventions.generateDocumentId(this.database, collection.descriptor),
-      bulkInsert: (options) =>
-        options ? store.bulkInsert(this.database, options) : store.bulkInsert(this.database),
-    })
-    // Recorded only once the bind succeeds. A collection already bound elsewhere
-    // belongs to that database, and releasing this one must not detach it.
-    this.#registered.add(collection)
   }
 
   /**
@@ -254,11 +266,18 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
   /**
    * The single Unit of Work policy: a caller-owned session is reused untouched, a
    * library-owned session is saved after successful work and disposed either way.
+   * Handles also require this database to be connected before using an external session.
    */
   async #runInSession<T>(
     given: OdmSession | undefined,
     fn: (session: OdmSession, owned: boolean) => Promise<T>,
   ): Promise<T> {
+    if (given && !this.#store) {
+      throw new RavenOdmError(
+        'not_connected',
+        'Database is not connected. Call await db.connect() first.',
+      )
+    }
     if (given) return fn(given, false)
     const session = this.openSession()
     try {
@@ -271,14 +290,14 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
   }
 
   /**
-   * Closes the client and releases the collections this database attached.
+   * Closes the client and clears this database's collection registration.
    *
    * Call it on shutdown: the client holds sockets and timers, so a process that
    * finishes without disposing stays alive. Do **not** call it per request in a
    * serverless handler — that discards the cluster topology and pays the
    * handshake again on the next invocation.
    *
-   * The database can be connected again afterwards, and its collections keep
+   * The database can be connected again afterwards, and its handles keep
    * working against the new connection.
    *
    * @example
@@ -289,17 +308,11 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
   async dispose(): Promise<void> {
     this.#store?.dispose()
     this.#store = undefined
-    this.#release()
+    this.#clearRegistry()
   }
 
-  /**
-   * Registration is per connection, not per instance: without this, connect()
-   * would find its own collections already registered and report them as
-   * duplicates supplied by the caller.
-   */
-  #release(): void {
-    for (const collection of this.#registered) collection.unbind()
-    this.#registered.clear()
+  /** Clears registration metadata owned by this database instance. */
+  #clearRegistry(): void {
     this.#registry.clear()
   }
 }

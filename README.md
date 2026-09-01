@@ -8,7 +8,7 @@
 
 Creating a new RavenDB document type directly with the official client is flexible, but the application must decide where to keep the collection name, document shape, validation rules, ID behavior, session boundaries, and query code. Repeating those decisions for every document type creates infrastructure code that is easy to drift.
 
-Raven ODM centralizes the collection definition, schema, validation, and RavenDB access in one typed object. This reduces the boilerplate needed to add documents without requiring a class, a hand-written mapping layer, and a separate validation setup for every document type. TypeScript can infer the document shape from the schema, while plain objects remain the normal data model.
+`Collection` is definition-only: it keeps the collection definition, schema, and validation rules in one typed declaration, while the database-owned `BoundCollection` handle provides RavenDB access through `db.<key>`. This reduces the boilerplate needed to add documents without requiring a class, a hand-written mapping layer, and a separate validation setup for every document type. TypeScript can infer the document shape from the schema, while plain objects remain the normal data model.
 
 ### Official RavenDB client vs. Raven ODM
 
@@ -26,18 +26,18 @@ This definition uses the current `defineCollection`, `createDatabase`, `create`,
 import { z } from 'zod'
 import { createDatabase, defineCollection } from '@degliersa/raven-odm'
 
+const users = defineCollection({
+  name: 'Users',
+  schema: z.object({
+    name: z.string().min(1),
+    email: z.email(),
+  }),
+})
+
 const db = createDatabase({
   urls: ['http://127.0.0.1:8080'],
   database: 'example',
-  collections: {
-    users: defineCollection({
-      name: 'Users',
-      schema: z.object({
-        name: z.string().min(1),
-        email: z.email(),
-      }),
-    }),
-  },
+  collections: { users },
 })
 
 await db.connect()
@@ -55,6 +55,20 @@ const matching = await db.users.findMany({
 console.log({ created, byId, matching })
 await db.dispose()
 ```
+
+The declaration is definition-only: it describes the RavenDB collection name and schema but does not own a connection. `db.users` is the database-owned operational handle, so all CRUD and query operations go through that handle. The same definition can be registered with multiple databases, and disposing one database does not affect another database using it:
+
+```ts
+const users = defineCollection({ name: 'Users', schema: userSchema })
+const tenantA = createDatabase({ urls, database: 'tenant-a', collections: { users } })
+const tenantB = createDatabase({ urls, database: 'tenant-b', collections: { users } })
+
+await Promise.all([tenantA.connect(), tenantB.connect()])
+await tenantA.users.create({ name: 'Maria' })
+await tenantB.users.create({ name: 'Joana' })
+```
+
+Collection declarations are no longer globally bound, so the removed `already_bound` failure is no longer part of the API.
 
 The `schema` is the single source for validation and inferred document types. Collections are reached through the connected database — `db.users` — and the object key names the accessor only: the RavenDB collection stays exactly the `name` you gave it. `create` returns a document with an `id`.
 
@@ -91,7 +105,7 @@ The project is designed for applications that want:
 
 The package has left the `alpha` prerelease channel and is now released normally. The public API is intentionally small, and every behavior it documents is covered by an integration suite that runs against a real RavenDB server.
 
-Versions are still `0.x`: the surface described here is settled and tested, but semver does not yet promise it against breaking changes. One is already anticipated — a collection currently belongs to one connected database at a time, and lifting that would retire the `already_bound` error code.
+Versions are still `0.x`: the surface described here is settled and tested, but semver does not yet promise it against breaking changes. Collection declarations are reusable across databases; `defineCollection()` creates a definition, and CRUD operations are performed through the database-owned `db.<key>` handle.
 
 ## Installation
 
@@ -131,18 +145,18 @@ This example defines a collection, connects a database, and exercises create, re
 import { z } from 'zod'
 import { createDatabase, defineCollection } from '@degliersa/raven-odm'
 
+const users = defineCollection({
+  name: 'Users',
+  schema: z.object({
+    name: z.string().min(1),
+    email: z.email(),
+  }),
+})
+
 const db = createDatabase({
   urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8080'],
   database: process.env.RAVENDB_DATABASE ?? 'example',
-  collections: {
-    users: defineCollection({
-      name: 'Users',
-      schema: z.object({
-        name: z.string().min(1),
-        email: z.email(),
-      }),
-    }),
-  },
+  collections: { users },
 })
 
 await db.connect()
@@ -188,16 +202,16 @@ The default `idStrategy: 'uuid'` intentionally creates a known client-side ID in
 Use `idGenerator` for application-defined IDs. It receives the validated document, collection name, and database name. `idGenerator` and `idStrategy` are mutually exclusive: a collection that sets both is rejected with `invalid_configuration`, so the ID source is always visible in the definition.
 
 ```ts
+const users = defineCollection({
+  name: 'Users',
+  schema: userSchema,
+  idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
+})
+
 const db = createDatabase({
   urls,
   database: 'example',
-  collections: {
-    users: defineCollection({
-      name: 'Users',
-      schema: userSchema,
-      idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
-    }),
-  },
+  collections: { users },
 })
 ```
 
@@ -318,7 +332,7 @@ Set `optimisticConcurrency: true` to enable RavenDB optimistic concurrency for e
 const db = createDatabase({
   urls,
   database,
-  collections: { users: Users },
+  collections: { users },
   optimisticConcurrency: true,
 })
 ```
@@ -346,7 +360,6 @@ RavenDB failures are normalized into `RavenOdmError` subclasses. Inspect `code`,
 | `concurrency_conflict` | Optimistic concurrency rejected a stale write. |
 | `document_not_found` | An `update` targeted a missing document. |
 | `not_connected` | A database or collection was used before `connect()`. |
-| `already_bound` | A collection was attached to more than one database. |
 | `invalid_configuration` | Collection or database configuration is invalid, `idStrategy: 'server'` was used where its id could never be read back (an external session, or `bulkInsert()`), or `certificateFromBase64()` got a missing or malformed value. |
 | `query_timeout` | `findMany`, `findOne`, `findPage`, or `count` waited for a non-stale index and the wait ran out. |
 | `raven_error` | An unclassified RavenDB client/server failure. |
@@ -368,21 +381,21 @@ const nativeStore = db.store
 
 ## Connection lifecycle
 
-`connect()` attaches every configured collection to the database; `dispose()` releases them again. A disposed database can be connected again, and its collections keep working against the new connection:
+`connect()` prepares a handle for every configured collection on the database. `dispose()` closes that database's connection but leaves its handles available; operations through them raise `not_connected` until reconnect. A disposed database can be connected again, and its handles keep working against the new connection:
 
 ```ts
 await db.connect()
 await db.dispose()
-await db.connect() // same collections, usable again
+await db.connect() // same handles, usable again
 ```
 
-Between the two calls, a collection has no database, so using it raises `not_connected`. A failed `connect()` releases whatever it had already attached, so a configuration mistake can be corrected and retried.
+Between the two calls, a handle has no active database connection, so using it raises `not_connected`. A failed `connect()` releases whatever it had already prepared, so a configuration mistake can be corrected and retried.
 
-A collection belongs to one connected database at a time. Passing the same collection to a second database while the first is still connected raises `already_bound`; disposing the first releases it for the second.
+Collection declarations are definition-only and are not globally bound. The same declaration can be used by multiple databases, and disposing one database does not affect another database using that declaration.
 
 Two things about these calls are worth knowing before they surprise you:
 
-- **`connect()` does not reach the server.** It attaches collections and initializes the client; the RavenDB client only opens a connection on the first real operation. A wrong URL, an unreachable host, or a missing certificate therefore fails at your first `create()` or `findMany()`, not at startup.
+- **`connect()` does not reach the server.** It prepares collection handles and initializes the client; the RavenDB client only opens a connection on the first real operation. A wrong URL, an unreachable host, or a missing certificate therefore fails at your first `create()` or `findMany()`, not at startup.
 - **`dispose()` is what lets the process exit.** The client holds sockets and timers, so a script that finishes its work without disposing keeps Node alive.
 
 ## Secured connections
@@ -442,11 +455,13 @@ const userSchema = z.object({ name: z.string(), email: z.email() })
 
 export type AppDatabase = RavenDatabase<{ users: Collection<typeof userSchema> }>
 
+const users = defineCollection({ name: 'Users', schema: userSchema })
+
 const createAppDatabase = (): AppDatabase =>
   createDatabase({
     urls: [process.env.RAVENDB_URL as string],
     database: process.env.RAVENDB_DATABASE as string,
-    collections: { users: defineCollection({ name: 'Users', schema: userSchema }) },
+    collections: { users },
   })
 
 // Hot reload re-evaluates modules, and each evaluation would build another
