@@ -157,7 +157,9 @@ describe('Collection CRUD', () => {
     await db.users.create({ name: 'Alice', email: 'alice@example.com' })
     await db.users.create({ name: 'Bob', email: 'bob@example.com' })
 
-    await expect(db.users.findOne({ where: { name: 'Bob' } })).resolves.toEqual({
+    await expect(
+      db.users.findOne({ where: { name: 'Bob' }, waitForNonStaleResults: true }),
+    ).resolves.toEqual({
       name: 'Bob',
       email: 'bob@example.com',
       id: 'user_bob',
