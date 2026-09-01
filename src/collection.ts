@@ -176,6 +176,8 @@ export type RunInSession = <T>(
 export interface CollectionBinding {
   readonly database: string
   readonly descriptor: CollectionDescriptor
+  /** Throws `not_connected` before any operation-specific work starts. */
+  assertConnected(): void
   runInSession: RunInSession
   /** Reserves the next HiLo id for this collection. Takes no document: the id
    * depends on the collection, never on what is being stored. */
@@ -280,7 +282,9 @@ export class BoundCollection<S extends DocumentSchema> {
   }
 
   #bound(): CollectionBinding {
-    return this.#binding
+    const binding = this.#binding
+    binding.assertConnected()
+    return binding
   }
 
   /** Strip client/server bookkeeping so the user schema never sees it. */

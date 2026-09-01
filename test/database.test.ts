@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createDatabase, type Database, defineCollection } from '../src/index'
 import { type TestDatabase, withDatabase } from './helpers'
@@ -136,28 +136,62 @@ describe('database configuration', () => {
     })
   })
 
-  it('recovers from a failed connect once the configuration is fixed', async () => {
+  it('recovers a failed connect on the same instance after registry cleanup', async () => {
     const database = await withDatabase()
     databases.push(database)
     const first = defineCollection({ name: 'People', schema })
     const duplicate = defineCollection({ name: 'People', schema })
-    const broken = createDatabase({
+    const collections = { first, duplicate }
+    const db = createDatabase({
       urls: [ravenUrl()],
       database: database.name,
-      collections: { first, duplicate },
+      collections,
     })
-    connections.push(broken)
-    await expect(broken.connect()).rejects.toMatchObject({ code: 'invalid_configuration' })
+    connections.push(db)
 
-    const fixed = createDatabase({
+    await expect(db.connect()).rejects.toMatchObject({ code: 'invalid_configuration' })
+    await expect(db.first.findById('People/missing')).rejects.toMatchObject({
+      code: 'not_connected',
+    })
+
+    Reflect.deleteProperty(collections, 'duplicate')
+    await db.connect()
+    const person = await db.first.create({ name: 'Maria' })
+    await expect(db.first.findById(person.id)).resolves.toEqual(person)
+  })
+
+  it('rejects create paths before validation and ID resolution while disconnected', async () => {
+    const database = await withDatabase()
+    databases.push(database)
+    const generateId = vi.fn(() => 'People/generated')
+    const db = createDatabase({
       urls: [ravenUrl()],
       database: database.name,
-      collections: { first },
+      collections: {
+        people: defineCollection({ name: 'People', schema, idGenerator: generateId }),
+      },
     })
-    connections.push(fixed)
-    await fixed.connect()
-    const person = await fixed.first.create({ name: 'Maria' })
-    await expect(fixed.first.findById(person.id)).resolves.toEqual(person)
+    connections.push(db)
+
+    await expect(db.people.create({ name: 42 } as never)).rejects.toMatchObject({
+      code: 'not_connected',
+    })
+    await expect(db.people.createMany([{ name: 'Maria' }])).rejects.toMatchObject({
+      code: 'not_connected',
+    })
+    expect(generateId).not.toHaveBeenCalled()
+
+    await db.connect()
+    await db.dispose()
+    generateId.mockClear()
+
+    await expect(db.people.create({ name: 42 } as never)).rejects.toMatchObject({
+      code: 'not_connected',
+    })
+    await expect(db.people.createMany([{ name: 'Joana' }])).rejects.toMatchObject({
+      code: 'not_connected',
+    })
+    expect(generateId).not.toHaveBeenCalled()
   })
 
   it('rejects duplicate collection names', async () => {

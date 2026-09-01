@@ -121,6 +121,9 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
       const binding: CollectionBinding = {
         database: this.database,
         descriptor: collection.descriptor,
+        assertConnected: () => {
+          void this.store
+        },
         runInSession: (given, fn) => this.#runInSession(given, fn),
         // These closures read the current store, so reconnecting this database
         // keeps every handle usable without changing the shared definition.
