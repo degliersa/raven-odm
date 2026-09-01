@@ -18,6 +18,12 @@ import { type IdStrategy, selectIdStrategy } from './id-strategy'
 import { validate } from './validate'
 
 const METADATA_KEY = '@metadata'
+const COLLECTION_CONFIGURATION = Symbol('collection configuration')
+
+type CollectionConfiguration = {
+  readonly resolveId: IdStrategy<DocumentSchema>
+  readonly validateOnRead: boolean
+}
 
 /** Documents are objects, so the schema's OUTPUT must be an object. */
 export type DocumentSchema = StandardSchemaV1<unknown, object>
@@ -166,7 +172,7 @@ export type RunInSession = <T>(
   fn: (session: OdmSession, owned: boolean) => Promise<T>,
 ) => Promise<T>
 
-/** Set by createDatabase(); a collection is inert until then. */
+/** Binding owned by one database-owned collection handle. */
 export interface CollectionBinding {
   readonly database: string
   readonly descriptor: CollectionDescriptor
@@ -178,14 +184,33 @@ export interface CollectionBinding {
   bulkInsert(options?: BulkInsertOptions): BulkInsertOperation
 }
 
+/**
+ * Declares a collection: an exact RavenDB collection name plus the schema that
+ * validates its documents and gives them their TypeScript type.
+ *
+ * A `Collection` is a definition only. Pass it to `createDatabase`, then use
+ * the database-owned `db.<key>` handle for reads and writes.
+ *
+ * @example
+ * ```ts
+ * const users = defineCollection({
+ *   name: 'Users',                       // the RavenDB collection, verbatim
+ *   schema: z.object({ name: z.string(), email: z.email() }),
+ * })
+ *
+ * const db = createDatabase({ urls, database: 'app', collections: { users } })
+ * await db.connect()
+ * await db.users.create({ name: 'Maria', email: 'maria@example.com' })
+ * ```
+ *
+ * @throws `RavenOdmError` with `invalid_configuration` — the name is empty, or
+ * both `idGenerator` and `idStrategy` were given.
+ */
 export class Collection<S extends DocumentSchema> {
   readonly name: string
   readonly schema: S
   readonly descriptor: CollectionDescriptor
-
-  #resolveId: IdStrategy<S>
-  #validateOnRead: boolean
-  #binding: CollectionBinding | undefined
+  readonly [COLLECTION_CONFIGURATION]: CollectionConfiguration
 
   constructor(options: CollectionOptions<S>) {
     if (!options.name) {
@@ -207,11 +232,11 @@ export class Collection<S extends DocumentSchema> {
     }
     this.name = options.name
     this.schema = options.schema
-    this.#resolveId = selectIdStrategy({
+    const resolveId = selectIdStrategy({
       idStrategy: options.idStrategy,
       idGenerator: options.idGenerator,
-    })
-    this.#validateOnRead = options.validateOnRead ?? false
+    }) as IdStrategy<DocumentSchema>
+    const validateOnRead = options.validateOnRead ?? false
     // RavenDB calls isType() to recover a descriptor from a bare object, which
     // this ODM needs in exactly one place: resolving the collection name while
     // reserving a HiLo id. So the descriptor identifies *itself* and nothing
@@ -224,42 +249,37 @@ export class Collection<S extends DocumentSchema> {
       isType: (obj) => obj === this.descriptor,
       construct: (dto) => dto,
     }
+    this[COLLECTION_CONFIGURATION] = { resolveId, validateOnRead }
   }
+}
 
-  /** @internal */
-  bind(binding: CollectionBinding): void {
-    if (this.#binding) {
-      throw new RavenOdmError(
-        'already_bound',
-        `Collection "${this.name}" is already bound to a database`,
-        { collection: this.name },
-      )
-    }
+/**
+ * Operational collection handle owned by one `Database`.
+ *
+ * Handles are exposed as `db.<key>` and keep their database binding private.
+ * The same `Collection` definition can therefore be used by multiple
+ * databases without sharing clients, sessions, or lifecycle state.
+ */
+export class BoundCollection<S extends DocumentSchema> {
+  readonly name: string
+  readonly schema: S
+  readonly descriptor: CollectionDescriptor
+
+  #resolveId: IdStrategy<S>
+  #validateOnRead: boolean
+  #binding: CollectionBinding
+
+  constructor(definition: Collection<S>, binding: CollectionBinding) {
+    const configuration = definition[COLLECTION_CONFIGURATION]
+    this.name = definition.name
+    this.schema = definition.schema
+    this.descriptor = definition.descriptor
+    this.#resolveId = configuration.resolveId as IdStrategy<S>
+    this.#validateOnRead = configuration.validateOnRead
     this.#binding = binding
   }
 
-  /**
-   * Released by `Database.dispose()`, and only for the database that bound it,
-   * so a disposed database can be connected again and a collection is never
-   * detached from a database that is still live.
-   *
-   * @internal
-   */
-  unbind(): void {
-    this.#binding = undefined
-  }
-
   #bound(): CollectionBinding {
-    if (!this.#binding) {
-      throw new RavenOdmError(
-        'not_connected',
-        'Collection "' +
-          this.name +
-          '" is not attached to a database. ' +
-          'Pass it to createDatabase({ collections: [...] }) and await db.connect().',
-        { collection: this.name },
-      )
-    }
     return this.#binding
   }
 
@@ -877,13 +897,19 @@ export class Collection<S extends DocumentSchema> {
   }
 }
 
+/** @internal */
+export function createBoundCollection<S extends DocumentSchema>(
+  definition: Collection<S>,
+  binding: CollectionBinding,
+): BoundCollection<S> {
+  return new BoundCollection(definition, binding)
+}
+
 /**
- * Declares a collection: an exact RavenDB collection name plus the schema that
- * validates its documents and gives them their TypeScript type.
+ * Creates a collection definition with an exact RavenDB name and schema.
  *
- * The result is inert until you pass it to `createDatabase` and connect — using
- * it before that raises `not_connected`. Reach it through the database
- * afterwards, as `db.<key>`.
+ * Pass the definition to `createDatabase`; use the resulting `db.<key>` handle
+ * for collection operations.
  *
  * @example
  * ```ts

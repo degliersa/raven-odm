@@ -6,7 +6,6 @@ export type RavenOdmErrorCode =
   | 'concurrency_conflict'
   | 'document_not_found'
   | 'not_connected'
-  | 'already_bound'
   | 'invalid_configuration'
   | 'query_timeout'
   | 'raven_error'

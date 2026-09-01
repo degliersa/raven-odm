@@ -29,11 +29,46 @@ describe('database configuration', () => {
     connections.push(db)
     await db.connect()
 
-    expect(db.users).toBe(users)
+    expect(db.users).not.toBe(users)
     const person = await db.users.create({ name: 'Maria' })
     await expect(db.users.findById(person.id)).resolves.toEqual(person)
     // The key names the accessor; the RavenDB collection name is untouched.
     expect(db.users.name).toBe('People')
+  })
+
+  it('gives each database an independent handle for one shared declaration', async () => {
+    const firstDatabase = await withDatabase()
+    const secondDatabase = await withDatabase()
+    databases.push(firstDatabase, secondDatabase)
+
+    const people = defineCollection({ name: 'People', schema })
+    const first = createDatabase({
+      urls: [ravenUrl()],
+      database: firstDatabase.name,
+      collections: { people },
+    })
+    const second = createDatabase({
+      urls: [ravenUrl()],
+      database: secondDatabase.name,
+      collections: { people },
+    })
+    connections.push(first, second)
+
+    await Promise.all([first.connect(), second.connect()])
+
+    expect(first.people).not.toBe(people)
+    expect(second.people).not.toBe(people)
+    expect(first.people).not.toBe(second.people)
+
+    const firstPerson = await first.people.create({ name: 'Maria' })
+    const secondPerson = await second.people.create({ name: 'Joana' })
+    await expect(first.people.findById(firstPerson.id)).resolves.toEqual(firstPerson)
+    await expect(second.people.findById(secondPerson.id)).resolves.toEqual(secondPerson)
+    await expect(first.people.findById(secondPerson.id)).resolves.toBeNull()
+    await expect(second.people.findById(firstPerson.id)).resolves.toBeNull()
+
+    await first.dispose()
+    await expect(second.people.findById(secondPerson.id)).resolves.toEqual(secondPerson)
   })
 
   it('rejects a collection key that would shadow the database API', async () => {
@@ -49,28 +84,6 @@ describe('database configuration', () => {
     ).toThrowError(/reserved/)
   })
 
-  it('rejects reusing a collection in a second database', async () => {
-    const firstDatabase = await withDatabase()
-    const secondDatabase = await withDatabase()
-    databases.push(firstDatabase, secondDatabase)
-    const collection = defineCollection({ name: 'People', schema })
-    const first = createDatabase({
-      urls: [ravenUrl()],
-      database: firstDatabase.name,
-      collections: { people: collection },
-    })
-    connections.push(first)
-    await first.connect()
-
-    const second = createDatabase({
-      urls: [ravenUrl()],
-      database: secondDatabase.name,
-      collections: { people: collection },
-    })
-    connections.push(second)
-    await expect(second.connect()).rejects.toMatchObject({ code: 'already_bound' })
-  })
-
   it('reconnects after dispose and keeps serving the same collections', async () => {
     const database = await withDatabase()
     databases.push(database)
@@ -83,18 +96,18 @@ describe('database configuration', () => {
     connections.push(db)
 
     await db.connect()
-    const before = await people.create({ name: 'Maria' })
+    const before = await db.people.create({ name: 'Maria' })
     await db.dispose()
 
-    await expect(people.findById(before.id)).rejects.toMatchObject({ code: 'not_connected' })
+    await expect(db.people.findById(before.id)).rejects.toMatchObject({ code: 'not_connected' })
 
     await db.connect()
-    await expect(people.findById(before.id)).resolves.toEqual(before)
-    const after = await people.create({ name: 'Joana' })
-    await expect(people.findById(after.id)).resolves.toEqual(after)
+    await expect(db.people.findById(before.id)).resolves.toEqual(before)
+    const after = await db.people.create({ name: 'Joana' })
+    await expect(db.people.findById(after.id)).resolves.toEqual(after)
   })
 
-  it('allows a second database to take over a collection released by the first', async () => {
+  it('isolates disposal between databases sharing a declaration', async () => {
     const firstDatabase = await withDatabase()
     const secondDatabase = await withDatabase()
     databases.push(firstDatabase, secondDatabase)
@@ -103,48 +116,24 @@ describe('database configuration', () => {
     const first = createDatabase({
       urls: [ravenUrl()],
       database: firstDatabase.name,
-      collections: { collection },
+      collections: { people: collection },
     })
-    connections.push(first)
-    await first.connect()
-    await first.dispose()
-
     const second = createDatabase({
       urls: [ravenUrl()],
       database: secondDatabase.name,
-      collections: { collection },
+      collections: { people: collection },
     })
-    connections.push(second)
-    await second.connect()
-    const person = await collection.create({ name: 'Maria' })
-    await expect(collection.findById(person.id)).resolves.toEqual(person)
-  })
+    connections.push(first, second)
+    await Promise.all([first.connect(), second.connect()])
 
-  it('leaves a collection bound when an unrelated database is disposed', async () => {
-    const firstDatabase = await withDatabase()
-    const secondDatabase = await withDatabase()
-    databases.push(firstDatabase, secondDatabase)
-    const collection = defineCollection({ name: 'People', schema })
-
-    const first = createDatabase({
-      urls: [ravenUrl()],
-      database: firstDatabase.name,
-      collections: { collection },
-    })
-    connections.push(first)
-    await first.connect()
-
-    const second = createDatabase({
-      urls: [ravenUrl()],
-      database: secondDatabase.name,
-      collections: { collection },
-    })
-    connections.push(second)
-    await expect(second.connect()).rejects.toMatchObject({ code: 'already_bound' })
+    const firstPerson = await first.people.create({ name: 'Maria' })
+    const secondPerson = await second.people.create({ name: 'Joana' })
     await second.dispose()
 
-    const person = await collection.create({ name: 'Maria' })
-    await expect(collection.findById(person.id)).resolves.toEqual(person)
+    await expect(first.people.findById(firstPerson.id)).resolves.toEqual(firstPerson)
+    await expect(second.people.findById(secondPerson.id)).rejects.toMatchObject({
+      code: 'not_connected',
+    })
   })
 
   it('recovers from a failed connect once the configuration is fixed', async () => {
@@ -167,8 +156,8 @@ describe('database configuration', () => {
     })
     connections.push(fixed)
     await fixed.connect()
-    const person = await first.create({ name: 'Maria' })
-    await expect(first.findById(person.id)).resolves.toEqual(person)
+    const person = await fixed.first.create({ name: 'Maria' })
+    await expect(fixed.first.findById(person.id)).resolves.toEqual(person)
   })
 
   it('rejects duplicate collection names', async () => {

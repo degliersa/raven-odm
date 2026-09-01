@@ -19,9 +19,9 @@ export type {
   OdmSession,
   SessionOption,
 } from './collection'
-export { Collection, defineCollection } from './collection'
+export { BoundCollection, Collection, defineCollection } from './collection'
 export type {
-  BindableCollection,
+  BoundCollectionMap,
   CollectionMap,
   DatabaseOptions,
   RavenDatabase,
