@@ -175,9 +175,17 @@ describe('database configuration', () => {
 
     await expect(db.people.create({ name: 42 } as never)).rejects.toMatchObject({
       code: 'not_connected',
+      collection: 'People',
+      message:
+        'Collection "People" is not attached to a database. ' +
+        'Pass it to createDatabase({ collections: [...] }) and await db.connect().',
     })
     await expect(db.people.createMany([{ name: 'Maria' }])).rejects.toMatchObject({
       code: 'not_connected',
+      collection: 'People',
+      message:
+        'Collection "People" is not attached to a database. ' +
+        'Pass it to createDatabase({ collections: [...] }) and await db.connect().',
     })
     expect(generateId).not.toHaveBeenCalled()
 
@@ -187,9 +195,17 @@ describe('database configuration', () => {
 
     await expect(db.people.create({ name: 42 } as never)).rejects.toMatchObject({
       code: 'not_connected',
+      collection: 'People',
+      message:
+        'Collection "People" is not attached to a database. ' +
+        'Pass it to createDatabase({ collections: [...] }) and await db.connect().',
     })
     await expect(db.people.createMany([{ name: 'Joana' }])).rejects.toMatchObject({
       code: 'not_connected',
+      collection: 'People',
+      message:
+        'Collection "People" is not attached to a database. ' +
+        'Pass it to createDatabase({ collections: [...] }) and await db.connect().',
     })
     expect(generateId).not.toHaveBeenCalled()
   })

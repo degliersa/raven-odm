@@ -5,11 +5,11 @@ import {
   type IDocumentStore,
 } from 'ravendb'
 import {
-  createBoundCollection,
   type BoundCollection,
   type Collection,
   type CollectionBinding,
   type CollectionDescriptor,
+  createBoundCollection,
   type DocumentSchema,
   type OdmSession,
 } from './collection'
@@ -122,7 +122,14 @@ export class Database<TCollections extends CollectionMap = CollectionMap> {
         database: this.database,
         descriptor: collection.descriptor,
         assertConnected: () => {
-          void this.store
+          if (!this.#store) {
+            throw new RavenOdmError(
+              'not_connected',
+              `Collection "${collection.name}" is not attached to a database. ` +
+                'Pass it to createDatabase({ collections: [...] }) and await db.connect().',
+              { collection: collection.name },
+            )
+          }
         },
         runInSession: (given, fn) => this.#runInSession(given, fn),
         // These closures read the current store, so reconnecting this database

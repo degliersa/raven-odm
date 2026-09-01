@@ -6,7 +6,7 @@
 
 Ao criar diretamente com o cliente oficial um novo tipo de documento do RavenDB, você tem flexibilidade, mas precisa decidir onde manter o nome da collection, o formato do documento, as regras de validação, o comportamento do ID, os limites das sessões e o código das consultas. Repetir essas decisões para cada tipo de documento cria código de infraestrutura que pode se desalinhar com facilidade.
 
-O Raven ODM centraliza a definição da collection, o schema, a validação e o acesso ao RavenDB em um único objeto tipado. Isso reduz o código repetitivo necessário para adicionar documentos sem exigir uma classe, uma camada de mapeamento escrita manualmente e uma configuração de validação separada para cada tipo de documento. O TypeScript pode inferir o formato do documento a partir do schema, enquanto objetos simples continuam sendo o modelo de dados normal.
+A `Collection` é apenas uma definição: mantém a definição da collection, o schema e as regras de validação em uma declaração tipada, enquanto o handle `BoundCollection`, pertencente ao banco de dados, fornece acesso ao RavenDB por meio de `db.<key>`. Isso reduz o código repetitivo necessário para adicionar documentos sem exigir uma classe, uma camada de mapeamento escrita manualmente e uma configuração de validação separada para cada tipo de documento. O TypeScript pode inferir o formato do documento a partir do schema, enquanto objetos simples continuam sendo o modelo de dados normal.
 
 ### Cliente oficial do RavenDB versus Raven ODM
 
@@ -379,7 +379,7 @@ const nativeStore = db.store
 
 ## Ciclo de vida da conexão
 
-O `connect()` prepara um handle para cada coleção configurada no banco; o `dispose()` libera esses handles. Um banco descartado pode ser conectado de novo, e seus handles continuam funcionando na nova conexão:
+O `connect()` prepara um handle para cada coleção configurada no banco. O `dispose()` fecha a conexão desse banco, mas mantém os handles disponíveis; operações por eles lançam `not_connected` até a reconexão. Um banco descartado pode ser conectado de novo, e seus handles continuam funcionando na nova conexão:
 
 ```ts
 await db.connect()

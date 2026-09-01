@@ -8,7 +8,7 @@
 
 Creating a new RavenDB document type directly with the official client is flexible, but the application must decide where to keep the collection name, document shape, validation rules, ID behavior, session boundaries, and query code. Repeating those decisions for every document type creates infrastructure code that is easy to drift.
 
-Raven ODM centralizes the collection definition, schema, validation, and RavenDB access in one typed object. This reduces the boilerplate needed to add documents without requiring a class, a hand-written mapping layer, and a separate validation setup for every document type. TypeScript can infer the document shape from the schema, while plain objects remain the normal data model.
+`Collection` is definition-only: it keeps the collection definition, schema, and validation rules in one typed declaration, while the database-owned `BoundCollection` handle provides RavenDB access through `db.<key>`. This reduces the boilerplate needed to add documents without requiring a class, a hand-written mapping layer, and a separate validation setup for every document type. TypeScript can infer the document shape from the schema, while plain objects remain the normal data model.
 
 ### Official RavenDB client vs. Raven ODM
 
@@ -381,7 +381,7 @@ const nativeStore = db.store
 
 ## Connection lifecycle
 
-`connect()` prepares a handle for every configured collection on the database; `dispose()` releases those handles again. A disposed database can be connected again, and its handles keep working against the new connection:
+`connect()` prepares a handle for every configured collection on the database. `dispose()` closes that database's connection but leaves its handles available; operations through them raise `not_connected` until reconnect. A disposed database can be connected again, and its handles keep working against the new connection:
 
 ```ts
 await db.connect()
