@@ -24,18 +24,18 @@ Esta definição usa as APIs atuais `defineCollection`, `createDatabase`, `creat
 import { z } from 'zod'
 import { createDatabase, defineCollection } from '@degliersa/raven-odm'
 
+const users = defineCollection({
+  name: 'Users',
+  schema: z.object({
+    name: z.string().min(1),
+    email: z.email(),
+  }),
+})
+
 const db = createDatabase({
   urls: ['http://127.0.0.1:8080'],
   database: 'example',
-  collections: {
-    users: defineCollection({
-      name: 'Users',
-      schema: z.object({
-        name: z.string().min(1),
-        email: z.email(),
-      }),
-    }),
-  },
+  collections: { users },
 })
 
 await db.connect()
@@ -55,6 +55,20 @@ await db.dispose()
 ```
 
 O `schema` é a fonte única para validação e tipos de documento inferidos. As coleções são acessadas pelo banco conectado — `db.users` — e a chave do objeto nomeia apenas o acessor: a coleção do RavenDB continua sendo exatamente o `name` que você deu. O `create` retorna um documento com `id`.
+
+A declaração é apenas uma definição: ela descreve o nome da coleção do RavenDB e o schema, mas não é dona de uma conexão. `db.users` é o handle operacional pertencente ao banco de dados, então todo CRUD e consulta passam por esse handle. A mesma definição pode ser registrada em vários bancos, e descartar um banco não afeta outro banco que a utilize:
+
+```ts
+const users = defineCollection({ name: 'Users', schema: userSchema })
+const tenantA = createDatabase({ urls, database: 'tenant-a', collections: { users } })
+const tenantB = createDatabase({ urls, database: 'tenant-b', collections: { users } })
+
+await Promise.all([tenantA.connect(), tenantB.connect()])
+await tenantA.users.create({ name: 'Maria' })
+await tenantB.users.create({ name: 'Joana' })
+```
+
+As declarações de coleção não são mais vinculadas globalmente, portanto a falha removida `already_bound` não faz mais parte da API.
 
 | Abordagem | Novo documento | Validação | Tipagem | Código repetitivo |
 |-----------|----------------|-----------|---------|-------------------|
@@ -89,7 +103,7 @@ O projeto foi criado para aplicações que desejam:
 
 O pacote saiu do canal de pré-lançamento `alpha` e passa a ser publicado normalmente. A API pública é intencionalmente pequena, e todo comportamento que ela documenta é coberto por uma suíte de integração executada contra um servidor RavenDB real.
 
-As versões ainda são `0.x`: a superfície descrita aqui está estabelecida e testada, mas o semver ainda não a promete contra mudanças incompatíveis. Uma delas já é prevista — hoje uma collection pertence a um único database conectado por vez, e remover essa restrição aposentaria o código de erro `already_bound`.
+As versões ainda são `0.x`: a superfície descrita aqui está estabelecida e testada, mas o semver ainda não a promete contra mudanças incompatíveis. As declarações de coleção podem ser reutilizadas entre bancos; `defineCollection()` agora cria uma definição, e as operações CRUD são feitas pelo handle `db.<key>` pertencente ao banco de dados.
 
 ## Instalação
 
@@ -129,18 +143,18 @@ Este exemplo define uma coleção, conecta um banco de dados e executa criação
 import { z } from 'zod'
 import { createDatabase, defineCollection } from '@degliersa/raven-odm'
 
+const users = defineCollection({
+  name: 'Users',
+  schema: z.object({
+    name: z.string().min(1),
+    email: z.email(),
+  }),
+})
+
 const db = createDatabase({
   urls: [process.env.RAVENDB_URL ?? 'http://127.0.0.1:8080'],
   database: process.env.RAVENDB_DATABASE ?? 'example',
-  collections: {
-    users: defineCollection({
-      name: 'Users',
-      schema: z.object({
-        name: z.string().min(1),
-        email: z.email(),
-      }),
-    }),
-  },
+  collections: { users },
 })
 
 await db.connect()
@@ -186,16 +200,16 @@ A estratégia padrão `idStrategy: 'uuid'` cria intencionalmente um ID conhecido
 Use `idGenerator` para IDs definidos pela aplicação. Ele recebe o documento validado, o nome da coleção e o nome do banco de dados. `idGenerator` e `idStrategy` são mutuamente exclusivos: uma coleção que define os dois é rejeitada com `invalid_configuration`, de modo que a origem do ID fica sempre visível na definição.
 
 ```ts
+const users = defineCollection({
+  name: 'Users',
+  schema: userSchema,
+  idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
+})
+
 const db = createDatabase({
   urls,
   database: 'example',
-  collections: {
-    users: defineCollection({
-      name: 'Users',
-      schema: userSchema,
-      idGenerator: ({ document }) => `user_${document.name.toLowerCase()}`,
-    }),
-  },
+  collections: { users },
 })
 ```
 
@@ -316,7 +330,7 @@ Defina `optimisticConcurrency: true` para habilitar a concorrência otimista do 
 const db = createDatabase({
   urls,
   database,
-  collections: { users: Users },
+  collections: { users },
   optimisticConcurrency: true,
 })
 ```
@@ -344,7 +358,6 @@ As falhas do RavenDB são normalizadas em subclasses de `RavenOdmError`. Inspeci
 | `concurrency_conflict` | A concorrência otimista rejeitou uma gravação obsoleta. |
 | `document_not_found` | Um `update` teve como alvo um documento inexistente. |
 | `not_connected` | Um banco de dados ou coleção foi usado antes de `connect()`. |
-| `already_bound` | Uma coleção foi vinculada a mais de um banco de dados. |
 | `invalid_configuration` | A configuração da coleção ou do banco de dados é inválida, `idStrategy: 'server'` foi usada onde seu id nunca poderia ser lido de volta (uma sessão externa, ou `bulkInsert()`), ou o `certificateFromBase64()` recebeu um valor ausente ou malformado. |
 | `query_timeout` | O `findMany`, `findOne`, `findPage` ou `count` esperou por um índice não obsoleto e a espera se esgotou. |
 | `raven_error` | Uma falha não classificada do cliente/servidor RavenDB. |
@@ -366,21 +379,21 @@ const nativeStore = db.store
 
 ## Ciclo de vida da conexão
 
-O `connect()` vincula ao banco todas as coleções configuradas; o `dispose()` as libera. Um banco descartado pode ser conectado de novo, e suas coleções continuam funcionando na nova conexão:
+O `connect()` prepara um handle para cada coleção configurada no banco; o `dispose()` libera esses handles. Um banco descartado pode ser conectado de novo, e seus handles continuam funcionando na nova conexão:
 
 ```ts
 await db.connect()
 await db.dispose()
-await db.connect() // as mesmas coleções, utilizáveis de novo
+await db.connect() // os mesmos handles, utilizáveis de novo
 ```
 
-Entre as duas chamadas a coleção não tem banco, então usá-la lança `not_connected`. Um `connect()` que falha libera o que já tinha vinculado, de modo que um erro de configuração pode ser corrigido e tentado outra vez.
+Entre as duas chamadas, um handle não tem uma conexão ativa com o banco, então usá-lo lança `not_connected`. Um `connect()` que falha libera o que já tinha preparado, de modo que um erro de configuração pode ser corrigido e tentado outra vez.
 
-Uma coleção pertence a um banco conectado por vez. Passar a mesma coleção para um segundo banco enquanto o primeiro ainda está conectado lança `already_bound`; descartar o primeiro a libera para o segundo.
+As declarações de coleção são apenas definições e não são vinculadas globalmente. A mesma declaração pode ser usada por vários bancos, e descartar um banco não afeta outro banco que use essa declaração.
 
 Duas coisas sobre essas chamadas merecem ser sabidas antes de surpreender:
 
-- **O `connect()` não fala com o servidor.** Ele vincula as coleções e inicializa o cliente; o cliente do RavenDB só abre conexão na primeira operação de verdade. Uma URL errada, um host inacessível ou um certificado ausente falham no seu primeiro `create()` ou `findMany()`, e não na inicialização.
+- **O `connect()` não fala com o servidor.** Ele prepara os handles das coleções e inicializa o cliente; o cliente do RavenDB só abre conexão na primeira operação de verdade. Uma URL errada, um host inacessível ou um certificado ausente falham no seu primeiro `create()` ou `findMany()`, e não na inicialização.
 - **O `dispose()` é o que permite o processo encerrar.** O cliente mantém sockets e timers abertos, então um script que termina o trabalho sem descartar deixa o Node vivo.
 
 ## Conexões seguras
@@ -440,11 +453,13 @@ const userSchema = z.object({ name: z.string(), email: z.email() })
 
 export type AppDatabase = RavenDatabase<{ users: Collection<typeof userSchema> }>
 
+const users = defineCollection({ name: 'Users', schema: userSchema })
+
 const createAppDatabase = (): AppDatabase =>
   createDatabase({
     urls: [process.env.RAVENDB_URL as string],
     database: process.env.RAVENDB_DATABASE as string,
-    collections: { users: defineCollection({ name: 'Users', schema: userSchema }) },
+    collections: { users },
   })
 
 // O hot reload reavalia módulos, e cada avaliação construiria outro cliente com

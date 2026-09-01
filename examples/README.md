@@ -1,6 +1,6 @@
 # Examples
 
-The examples cover both validator integration and ID generation:
+The examples cover both validator integration and ID generation. Every executable example operates through the database-owned `db.<key>` handle; collection declarations describe the model and schema only.
 
 ## Validators
 
@@ -19,6 +19,20 @@ Each validator example defines a small `Users` collection with a different Stand
 - RavenDB HiLo IDs generated from a reserved range;
 - RavenDB server identities;
 - custom `idGenerator` values.
+
+## Shared definitions across databases
+
+The same definition can be registered in multiple database instances. Each database gets its own operational handle, so disposing one database does not affect the other:
+
+```ts
+const users = defineCollection({ name: 'Users', schema: userSchema })
+const tenantA = createDatabase({ urls, database: 'tenant-a', collections: { users } })
+const tenantB = createDatabase({ urls, database: 'tenant-b', collections: { users } })
+
+await Promise.all([tenantA.connect(), tenantB.connect()])
+await tenantA.users.create({ name: 'Maria' })
+await tenantB.users.create({ name: 'Joana' })
+```
 
 ## Run an example locally
 
